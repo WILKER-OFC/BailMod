@@ -433,14 +433,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
-		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
+		const uniqueJids = [...new Set(jids)]
 		const jidsRequiringFetch: string[] = []
 
 		logger.debug({ jids }, 'assertSessions call with jids')
 
-		// Check peerSessionsCache and validate sessions using libsignal loadSession
-		// Validate in parallel (bounded) to reduce latency for large fanouts.
-		const concurrency = Math.min(10, uniqueJids.length || 1)
+		const concurrency = Math.min(25, uniqueJids.length || 1)
 		let i = 0
 		const workers = Array.from({ length: concurrency }, async () => {
 			while (i < uniqueJids.length) {
@@ -452,13 +450,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const cachedSession = peerSessionsCache.get(signalId)
 				if (cachedSession !== undefined) {
 					if (cachedSession && !force) {
-						continue // Session exists in cache
+						continue
 					}
 				} else {
 					const sessionValidation = await signalRepository.validateSession(jid)
-					const hasSession = sessionValidation.exists
-					peerSessionsCache.set(signalId, hasSession)
-					if (hasSession && !force) {
+					peerSessionsCache.set(signalId, sessionValidation.exists)
+					if (sessionValidation.exists && !force) {
 						continue
 					}
 				}
@@ -469,7 +466,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		await Promise.all(workers)
 
 		if (jidsRequiringFetch.length) {
-			// LID if mapped, otherwise original
 			const wireJids = [
 				...jidsRequiringFetch.filter(jid => !!isLidUser(jid) || !!isHostedLidUser(jid)),
 				...(
@@ -502,11 +498,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			await parseAndInjectE2ESessions(result, signalRepository)
 			didFetchNewSession = true
 
-			// Cache fetched sessions using wire JIDs
-			for (const wireJid of wireJids) {
+			wireJids.forEach(wireJid => {
 				const signalId = signalRepository.jidToSignalProtocolAddress(wireJid)
 				peerSessionsCache.set(signalId, true)
-			}
+			})
 		}
 
 		return didFetchNewSession
@@ -566,7 +561,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
 
-		const encryptionPromises = (patchedMessages as any).map(
+		const encryptionPromises = patchedMessages.map(
 			async ({ recipientJid: jid, message: patchedMessage }: any) => {
 				try {
 					if (!jid) return null
@@ -588,29 +583,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 
 					const bytes = encodeWAMessage(msgToEncrypt)
-					const mutexKey = jid
 
-					const node = await encryptionMutex.mutex(mutexKey, async () => {
-						const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+					const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
 
-						if (type === 'pkmsg') {
-							shouldIncludeDeviceIdentity = true
-						}
+					if (type === 'pkmsg') {
+						shouldIncludeDeviceIdentity = true
+					}
 
-						return {
-							tag: 'to',
-							attrs: { jid },
-							content: [
-								{
-									tag: 'enc',
-									attrs: { v: '2', type, ...(extraAttrs || {}) },
-									content: ciphertext
-								}
-							]
-						}
-					})
-
-					return node
+					return {
+						tag: 'to',
+						attrs: { jid },
+						content: [
+							{
+								tag: 'enc',
+								attrs: { v: '2', type, ...(extraAttrs || {}) },
+								content: ciphertext
+							}
+						]
+					}
 				} catch (err) {
 					logger.error({ jid, err }, 'Failed to encrypt for recipient')
 					return null

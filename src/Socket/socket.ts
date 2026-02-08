@@ -120,6 +120,15 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 
 	const ws = new WebSocketClient(url, config)
+	ws.on('open', () => {
+		const rawSocket = (ws as any).socket
+		if (rawSocket?.setNoDelay) {
+			rawSocket.setNoDelay(true)
+		}
+		if (rawSocket?.setKeepAlive) {
+			rawSocket.setKeepAlive(true, 30000)
+		}
+	})
 
 	ws.connect()
 

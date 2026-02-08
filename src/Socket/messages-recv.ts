@@ -1359,17 +1359,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!)
 
-			const upsertType = node.attrs.offline ? 'append' : 'notify'
-			if (upsertType === 'append') {
-				await messageMutex.mutex(async () => {
-					await upsertMessage(msg, upsertType)
-				})
-			} else {
-				// Avoid mutex for live notifications to reduce latency
-				void upsertMessage(msg, upsertType).catch(err => {
-					logger.warn({ err, key: msg.key }, 'failed to upsert message')
-				})
-			}
+			void upsertMessage(msg, node.attrs.offline ? 'append' : 'notify').catch(err => {
+				logger.error({ err, key: msg.key }, 'failed to upsert message')
+			})
 		} catch (error) {
 			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
 		}
@@ -1482,20 +1474,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	/// processes a node with the given function
-	/// and adds the task to the existing buffer if we're buffering events
 	const processNodeWithBuffer = async <T>(
 		node: BinaryNode,
 		identifier: string,
 		exec: (node: BinaryNode, offline: boolean) => Promise<T>
 	) => {
-		ev.buffer()
-		await execTask()
-		ev.flush()
-
-		function execTask() {
-			return exec(node, false).catch(err => onUnexpectedError(err, identifier))
-		}
+		void exec(node, false).catch(err => onUnexpectedError(err, identifier))
 	}
 
 	type MessageType = 'message' | 'call' | 'receipt' | 'notification'
@@ -1505,11 +1489,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		node: BinaryNode
 	}
 
-	/** Yields control to the event loop to prevent blocking */
-	const yieldToEventLoop = (): Promise<void> => {
-		return new Promise(resolve => setImmediate(resolve))
-	}
-
 	const makeOfflineNodeProcessor = () => {
 		const nodeProcessorMap: Map<MessageType, (node: BinaryNode) => Promise<void>> = new Map([
 			['message', handleMessage],
@@ -1517,49 +1496,36 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			['receipt', handleReceipt],
 			['notification', handleNotification]
 		])
-		const nodes: OfflineNode[] = []
-		let isProcessing = false
-
-		// Number of nodes to process before yielding to event loop
-		const BATCH_SIZE = 10
+		const MAX_CONCURRENT = 50
+		let activePromises = 0
 
 		const enqueue = (type: MessageType, node: BinaryNode) => {
-			nodes.push({ type, node })
+			const nodeProcessor = nodeProcessorMap.get(type)
 
-			if (isProcessing) {
+			if (!nodeProcessor) {
+				onUnexpectedError(new Error(`unknown offline node type: ${type}`), 'processing offline node')
 				return
 			}
 
-			isProcessing = true
-
-			const promise = async () => {
-				let processedInBatch = 0
-
-				while (nodes.length && ws.isOpen) {
-					const { type, node } = nodes.shift()!
-
-					const nodeProcessor = nodeProcessorMap.get(type)
-
-					if (!nodeProcessor) {
-						onUnexpectedError(new Error(`unknown offline node type: ${type}`), 'processing offline node')
-						continue
-					}
-
+			const processNode = async () => {
+				activePromises++
+				try {
 					await nodeProcessor(node)
-					processedInBatch++
-
-					// Yield to event loop after processing a batch
-					// This prevents blocking the event loop for too long when there are many offline nodes
-					if (processedInBatch >= BATCH_SIZE) {
-						processedInBatch = 0
-						await yieldToEventLoop()
-					}
+				} catch (error) {
+					const err = error instanceof Error ? error : new Error(String(error))
+					onUnexpectedError(err, `processing offline ${type}`)
+				} finally {
+					activePromises--
 				}
-
-				isProcessing = false
 			}
 
-			promise().catch(error => onUnexpectedError(error, 'processing offline nodes'))
+			if (activePromises < MAX_CONCURRENT && ws.isOpen) {
+				void processNode()
+			} else {
+				setImmediate(() => {
+					if (ws.isOpen) void processNode()
+				})
+			}
 		}
 
 		return { enqueue }

@@ -135,10 +135,13 @@ export const UPLOAD_TIMEOUT = 30000 // 30 seconds
 export const MIN_UPLOAD_INTERVAL = 5000 // 5 seconds minimum between uploads
 
 export const DEFAULT_CACHE_TTLS = {
-	SIGNAL_STORE: 5 * 60, // 5 minutes
-	MSG_RETRY: 60 * 60, // 1 hour
-	CALL_OFFER: 5 * 60, // 5 minutes
-	USER_DEVICES: 5 * 60 // 5 minutes
+	SIGNAL_STORE: 10 * 60,
+	USER_DEVICES: 10 * 60,
+	MSG_RETRY: 60 * 60 * 2,
+	CALL_OFFER: 5 * 60,
+	BUSINESS_PROFILE: 15 * 60,
+	CHANNEL_UPDATE: 5 * 60,
+	NEWSLETTER_METADATA: 24 * 60 * 60
 }
 
 export const TimeMs = {
