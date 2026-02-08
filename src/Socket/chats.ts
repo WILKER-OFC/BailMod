@@ -1045,7 +1045,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
 		ev.emit('messages.upsert', { messages: [msg], type })
 
-		if (!!msg.pushName) {
+		const runPushNameSideEffects = async () => {
+			if (!msg.pushName) {
+				return
+			}
 			let jid = msg.key.fromMe ? authState.creds.me!.id : msg.key.participant || msg.key.remoteJid
 			jid = jidNormalizedUser(jid!)
 
@@ -1057,6 +1060,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			if (msg.key.fromMe && msg.pushName && authState.creds.me?.name !== msg.pushName) {
 				ev.emit('creds.update', { me: { ...authState.creds.me!, name: msg.pushName } })
 			}
+		}
+
+		if (type === 'notify') {
+			void runPushNameSideEffects().catch(err => {
+				logger.warn({ err }, 'background pushName processing failed')
+			})
+		} else {
+			await runPushNameSideEffects()
 		}
 
 		const historyMsg = getHistoryMsg(msg.message!)
