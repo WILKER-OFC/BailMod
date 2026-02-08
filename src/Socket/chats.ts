@@ -1098,30 +1098,42 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await Promise.all([
-			(async () => {
-				if (shouldProcessHistoryMsg) {
-					await doAppStateSync()
-				}
-			})(),
-			processMessage(msg, {
-				signalRepository,
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options,
-				getMessage
-			})
-		])
+		const runProcessing = async () => {
+			await Promise.all([
+				(async () => {
+					if (shouldProcessHistoryMsg) {
+						await doAppStateSync()
+					}
+				})(),
+				processMessage(msg, {
+					signalRepository,
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options,
+					getMessage
+				})
+			])
 
-		// If the app state key arrives and we are waiting to sync, trigger the sync now.
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
-			logger.info('App state sync key arrived, triggering app state sync')
-			await doAppStateSync()
+			// If the app state key arrives and we are waiting to sync, trigger the sync now.
+			if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
+				logger.info('App state sync key arrived, triggering app state sync')
+				await doAppStateSync()
+			}
 		}
+
+		if (type === 'notify') {
+			// Run heavy processing in the background to reduce live message latency
+			void runProcessing().catch(err => {
+				logger.warn({ err }, 'background message processing failed')
+			})
+			return
+		}
+
+		await runProcessing()
 	})
 
 	ws.on('CB:presence', handlePresenceUpdate)
