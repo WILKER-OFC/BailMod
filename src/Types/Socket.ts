@@ -169,6 +169,18 @@ export type SocketConfig = {
 	 */
 	groupMetadataCacheSaveDebounceMs?: number
 
+	/**
+	 * Newsletter metadata cache TTL in ms.
+	 * - Set to 0 to disable caching.
+	 * - Helps avoid repeated mex metadata calls for the same newsletter.
+	 */
+	newsletterMetadataCacheTtlMs: number
+
+	/**
+	 * Max entries for the in-memory newsletter metadata cache.
+	 */
+	newsletterMetadataCacheMaxSize: number
+
 	makeSignalRepository: (
 		auth: SignalAuthState,
 		logger: ILogger,

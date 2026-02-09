@@ -1,10 +1,26 @@
-import type { NewsletterCreateResponse, SocketConfig, WAMediaUpload } from '../Types'
+import type { NewsletterCreateResponse, NewsletterViewRole, SocketConfig, WAMediaUpload, WAMessage } from '../Types'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types'
 import { QueryIds, XWAPaths } from '../Types'
+import { decryptMessageNode } from '../Utils'
 import { generateProfilePicture } from '../Utils/messages-media'
-import { getBinaryNodeChild } from '../WABinary'
+import type { BinaryNode } from '../WABinary'
+import {
+	getAllBinaryNodeChildren,
+	getBinaryNodeChild,
+	getBinaryNodeChildren,
+	isJidNewsletter,
+	S_WHATSAPP_NET
+} from '../WABinary'
+import { LRUCache } from 'lru-cache'
 import { makeGroupsSocket } from './groups'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
+
+export type NewsletterFetchedMessage = {
+	server_id: string
+	views: number
+	reactions: { code: string; count: number }[]
+	message?: WAMessage
+}
 
 const parseNewsletterCreateResponse = (response: NewsletterCreateResponse): NewsletterMetadata => {
 	const { id, thread_metadata: thread, viewer_metadata: viewer } = response
@@ -43,32 +59,283 @@ const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => 
 
 export const makeNewsletterSocket = (config: SocketConfig) => {
 	const sock = makeGroupsSocket(config)
-	const { query, generateMessageTag } = sock
+	const { authState, ev, query, generateMessageTag, signalRepository } = sock
+	const { logger, newsletterMetadataCacheTtlMs, newsletterMetadataCacheMaxSize } = config
 
 	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
 		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
 	}
 
 	const newsletterUpdate = async (jid: string, updates: NewsletterUpdate) => {
+		const { settings, ...rest } = updates
 		const variables = {
 			newsletter_id: jid,
 			updates: {
-				...updates,
-				settings: null
+				...rest,
+				// keep backwards-compat: `settings: null` unless explicitly provided
+				settings: typeof settings === 'undefined' ? null : settings
 			}
 		}
 		return executeWMexQuery(variables, QueryIds.UPDATE_METADATA, 'xwa2_newsletter_update')
 	}
 
+	const newsletterQuery = async (jid: string, type: 'get' | 'set', content: BinaryNode[]) =>
+		query({
+			tag: 'iq',
+			attrs: {
+				id: generateMessageTag(),
+				type,
+				xmlns: 'newsletter',
+				to: jid
+			},
+			content
+		})
+
+	// ---- NEWSLETTER METADATA CACHE (reduces mex metadata spam) ----
+	const newsletterMetaCache =
+		newsletterMetadataCacheTtlMs > 0
+			? new LRUCache<string, NewsletterMetadata>({
+				max: Math.max(16, newsletterMetadataCacheMaxSize || 0),
+				ttl: newsletterMetadataCacheTtlMs,
+				updateAgeOnGet: true
+			})
+			: undefined
+	const inviteToNewsletterJidCache =
+		newsletterMetadataCacheTtlMs > 0
+			? new LRUCache<string, string>({
+				max: Math.max(16, Math.min(512, newsletterMetadataCacheMaxSize || 0)),
+				ttl: newsletterMetadataCacheTtlMs,
+				updateAgeOnGet: true
+			})
+			: undefined
+	const inFlightNewsletterMeta = new Map<string, Promise<NewsletterMetadata | null>>()
+
+	const mergeNewsletterSettingsUpdate = (jid: string, update: any) => {
+		if (!newsletterMetaCache || !update || typeof update !== 'object') return
+		const existing = newsletterMetaCache.get(jid)
+		if (!existing) return
+
+		const next: NewsletterMetadata = { ...existing }
+		if (typeof update.name === 'string') next.name = update.name
+		if (typeof update.description === 'string') next.description = update.description
+		newsletterMetaCache.set(jid, next)
+	}
+
+	// Keep cache fresh via events (no extra WA queries)
+	ev.on('newsletter-settings.update', ({ id, update }) => {
+		mergeNewsletterSettingsUpdate(id, update)
+	})
+
+	const parseFetchedMessages = async (
+		node: BinaryNode,
+		mode: 'messages' | 'updates',
+		{ decrypt }: { decrypt: boolean }
+	): Promise<NewsletterFetchedMessage[]> => {
+		const messagesNode =
+			mode === 'messages'
+				? getBinaryNodeChild(node, 'messages')
+				: getBinaryNodeChild(getBinaryNodeChild(node, 'message_updates'), 'messages')
+
+		if (!messagesNode) return []
+
+		const fromJid = messagesNode.attrs.jid
+
+		return await Promise.all(
+			getAllBinaryNodeChildren(messagesNode).map(async messageNode => {
+				// Some responses omit "from" on child message nodes; decoding relies on it.
+				if (fromJid && !messageNode.attrs.from) {
+					messageNode.attrs.from = fromJid
+				}
+
+				const views = parseInt(getBinaryNodeChild(messageNode, 'views_count')?.attrs?.count || '0', 10)
+				const reactionNode = getBinaryNodeChild(messageNode, 'reactions')
+				const reactions = getBinaryNodeChildren(reactionNode, 'reaction').map(({ attrs }) => ({
+					count: parseInt(attrs.count || '0', 10),
+					code: attrs.code || ''
+				}))
+
+				const server_id = messageNode.attrs.server_id || messageNode.attrs.message_id || messageNode.attrs.id || ''
+				const data: NewsletterFetchedMessage = {
+					server_id,
+					views,
+					reactions
+				}
+
+				if (decrypt) {
+					const meId = authState.creds.me!.id
+					const meLid = authState.creds.me!.lid || ''
+					const { fullMessage, decrypt: doDecrypt } = decryptMessageNode(
+						messageNode,
+						meId,
+						meLid,
+						signalRepository,
+						logger
+					)
+					await doDecrypt()
+					data.message = fullMessage
+				}
+
+				return data
+			})
+		)
+	}
+
+	const getNewsletterMetadata = async (type: 'invite' | 'jid', key: string, viewRole?: NewsletterViewRole) => {
+		// fast-path cache
+		if (type === 'jid') {
+			const cached = newsletterMetaCache?.get(key)
+			if (cached) return cached
+		} else {
+			const mapped = inviteToNewsletterJidCache?.get(key)
+			if (mapped) {
+				const cached = newsletterMetaCache?.get(mapped)
+				if (cached) return cached
+			}
+		}
+
+		const inflightKey = `${type}:${key}:${viewRole || ''}`
+		const inflight = inFlightNewsletterMeta.get(inflightKey)
+		if (inflight) return inflight
+
+		const p = (async () => {
+			const variables: any = {
+				fetch_creation_time: true,
+				fetch_full_image: true,
+				fetch_viewer_metadata: true,
+				input: {
+					key,
+					type: type.toUpperCase()
+				}
+			}
+
+			if (viewRole) {
+				variables.input.view_role = viewRole
+			}
+
+			const result = await executeWMexQuery<unknown>(variables, QueryIds.METADATA, XWAPaths.xwa2_newsletter_metadata)
+			const parsed = parseNewsletterMetadata(result)
+
+			if (parsed?.id) {
+				newsletterMetaCache?.set(parsed.id, parsed)
+				if (type === 'invite') {
+					inviteToNewsletterJidCache?.set(key, parsed.id)
+				}
+			}
+
+			return parsed
+		})()
+
+		inFlightNewsletterMeta.set(inflightKey, p)
+		try {
+			return await p
+		} finally {
+			inFlightNewsletterMeta.delete(inflightKey)
+		}
+	}
+
+	function newsletterFetchMessages(
+		type: 'invite' | 'jid',
+		key: string,
+		count: number,
+		after?: number
+	): Promise<NewsletterFetchedMessage[]>
+	function newsletterFetchMessages(
+		jid: string,
+		count: number,
+		since?: number,
+		after?: number
+	): Promise<BinaryNode>
+	async function newsletterFetchMessages(...args: any[]): Promise<NewsletterFetchedMessage[] | BinaryNode> {
+		// WaBail-style: (type, key, count, after?) => parsed messages
+		if (args[0] === 'invite' || args[0] === 'jid') {
+			const [type, key, count, after] = args as ['invite' | 'jid', string, number, number?]
+			const attrs: Record<string, string> = {
+				type,
+				count: count.toString()
+			}
+
+			if (type === 'invite') {
+				attrs.key = key
+			} else {
+				attrs.jid = key
+			}
+
+			if (typeof after === 'number') {
+				attrs.after = after.toString()
+			}
+
+			const result = await newsletterQuery(S_WHATSAPP_NET, 'get', [{ tag: 'messages', attrs }])
+			return await parseFetchedMessages(result, 'messages', { decrypt: true })
+		}
+
+		// Legacy: (jid, count, since?, after?) => raw node
+		const [jid, count, since, after] = args as [string, number, number?, number?]
+		const messageUpdateAttrs: { count: string; since?: string; after?: string } = {
+			count: count.toString()
+		}
+		if (typeof since === 'number') messageUpdateAttrs.since = since.toString()
+		if (typeof after === 'number') messageUpdateAttrs.after = after.toString()
+
+		const result = await query({
+			tag: 'iq',
+			attrs: {
+				id: generateMessageTag(),
+				type: 'get',
+				xmlns: 'newsletter',
+				to: jid
+			},
+			content: [
+				{
+					tag: 'message_updates',
+					attrs: messageUpdateAttrs
+				}
+			]
+		})
+		return result
+	}
+
 	return {
 		...sock,
-		newsletterCreate: async (name: string, description?: string): Promise<NewsletterMetadata> => {
-			const variables = {
+		newsletterQuery,
+
+		newsletterCreate: async (name: string, description?: string, picture?: WAMediaUpload): Promise<NewsletterMetadata> => {
+			// Some accounts require accepting the ToS notice prior to creating a newsletter.
+			try {
+				await query({
+					tag: 'iq',
+					attrs: {
+						to: S_WHATSAPP_NET,
+						xmlns: 'tos',
+						id: generateMessageTag(),
+						type: 'set'
+					},
+					content: [
+						{
+							tag: 'notice',
+							attrs: {
+								id: '20601218',
+								stage: '5'
+							},
+							content: []
+						}
+					]
+				})
+			} catch {
+				// Best-effort only
+			}
+
+			const variables: any = {
 				input: {
 					name,
 					description: description ?? null
 				}
 			}
+
+			if (picture) {
+				const { img } = await generateProfilePicture(picture)
+				variables.input.picture = img.toString('base64')
+			}
+
 			const rawResponse = await executeWMexQuery<NewsletterCreateResponse>(
 				variables,
 				QueryIds.CREATE,
@@ -87,18 +354,32 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 			)
 		},
 
-		newsletterMetadata: async (type: 'invite' | 'jid', key: string) => {
-			const variables = {
-				fetch_creation_time: true,
-				fetch_full_image: true,
-				fetch_viewer_metadata: true,
-				input: {
-					key,
-					type: type.toUpperCase()
+		newsletterMetadata: getNewsletterMetadata,
+
+		newsletterFetchAllParticipating: async (viewRole?: NewsletterViewRole) => {
+			const list = await executeWMexQuery<any[]>(
+				{},
+				QueryIds.SUBSCRIBED,
+				XWAPaths.xwa2_newsletter_subscribed
+			)
+
+			const items = Array.isArray(list) ? list : []
+			const data: Record<string, NewsletterMetadata> = {}
+
+			const concurrency = 3
+			let i = 0
+			const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+				while (i < items.length) {
+					const item = items[i++]
+					const jid = item?.id
+					if (!jid || !isJidNewsletter(jid)) continue
+					const meta = await getNewsletterMetadata('jid', jid, viewRole)
+					if (meta) data[meta.id] = meta
 				}
-			}
-			const result = await executeWMexQuery<unknown>(variables, QueryIds.METADATA, XWAPaths.xwa2_newsletter_metadata)
-			return parseNewsletterMetadata(result)
+			})
+			await Promise.all(workers)
+
+			return data
 		},
 
 		newsletterFollow: (jid: string) => {
@@ -134,6 +415,10 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 			return await newsletterUpdate(jid, { picture: '' })
 		},
 
+		newsletterReactionMode: async (jid: string, mode: string) => {
+			return await newsletterUpdate(jid, { settings: { reaction_codes: { value: mode } } })
+		},
+
 		newsletterReactMessage: async (jid: string, serverId: string, reaction?: string) => {
 			await query({
 				tag: 'message',
@@ -153,34 +438,19 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 			})
 		},
 
-		newsletterFetchMessages: async (jid: string, count: number, since: number, after: number) => {
-			const messageUpdateAttrs: { count: string; since?: string; after?: string } = {
-				count: count.toString()
-			}
-			if (typeof since === 'number') {
-				messageUpdateAttrs.since = since.toString()
-			}
+		newsletterFetchMessages,
 
-			if (after) {
-				messageUpdateAttrs.after = after.toString()
-			}
+		newsletterFetchUpdates: async (
+			jid: string,
+			count: number,
+			{ since, after, decrypt }: { since?: number; after?: number; decrypt?: boolean } = {}
+		) => {
+			const attrs: Record<string, string> = { count: count.toString() }
+			if (typeof since === 'number') attrs.since = since.toString()
+			if (typeof after === 'number') attrs.after = after.toString()
 
-			const result = await query({
-				tag: 'iq',
-				attrs: {
-					id: generateMessageTag(),
-					type: 'get',
-					xmlns: 'newsletter',
-					to: jid
-				},
-				content: [
-					{
-						tag: 'message_updates',
-						attrs: messageUpdateAttrs
-					}
-				]
-			})
-			return result
+			const result = await newsletterQuery(jid, 'get', [{ tag: 'message_updates', attrs }])
+			return await parseFetchedMessages(result, 'updates', { decrypt: !!decrypt })
 		},
 
 		subscribeNewsletterUpdates: async (jid: string): Promise<{ duration: string } | null> => {

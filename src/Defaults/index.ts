@@ -85,6 +85,9 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	// speeds up handler/admin checks & reduces metadata spam
 	groupMetadataCacheTtlMs: 5 * 60 * 1000,
 	groupMetadataCacheMaxSize: 512,
+	// reduces repeated mex metadata calls for the same newsletter
+	newsletterMetadataCacheTtlMs: 24 * 60 * 60 * 1000,
+	newsletterMetadataCacheMaxSize: 256,
 	makeSignalRepository: makeLibSignalRepository
 }
 

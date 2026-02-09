@@ -1,6 +1,7 @@
 export enum XWAPaths {
 	xwa2_newsletter_create = 'xwa2_newsletter_create',
 	xwa2_newsletter_subscribers = 'xwa2_newsletter_subscribers',
+	xwa2_newsletter_subscribed = 'xwa2_newsletter_subscribed',
 	xwa2_newsletter_view = 'xwa2_newsletter_view',
 	xwa2_newsletter_metadata = 'xwa2_newsletter',
 	xwa2_newsletter_admin_count = 'xwa2_newsletter_admin',
@@ -24,31 +25,16 @@ export enum QueryIds {
 	ADMIN_COUNT = '7130823597031706',
 	CHANGE_OWNER = '7341777602580933',
 	DEMOTE = '6551828931592903',
-	DELETE = '30062808666639665'
+	DELETE = '30062808666639665',
+	// Returns the newsletters the user is subscribed to (used by `newsletterFetchAllParticipating`)
+	SUBSCRIBED = '6388546374527196'
 }
 export type NewsletterUpdate = {
 	name?: string
 	description?: string
 	picture?: string
-}
-export interface NewsletterCreateResponse {
-	id: string
-	state: { type: string }
-	thread_metadata: {
-		creation_time: string
-		description: { id: string; text: string; update_time: string }
-		handle: string | null
-		invite: string
-		name: { id: string; text: string; update_time: string }
-		picture: { direct_path: string; id: string; type: string }
-		preview: { direct_path: string; id: string; type: string }
-		subscribers_count: string
-		verification: 'VERIFIED' | 'UNVERIFIED'
-	}
-	viewer_metadata: {
-		mute: 'ON' | 'OFF'
-		role: NewsletterViewRole
-	}
+	/** advanced settings updates (eg. reaction codes) */
+	settings?: Record<string, unknown> | null
 }
 export interface NewsletterCreateResponse {
 	id: string
