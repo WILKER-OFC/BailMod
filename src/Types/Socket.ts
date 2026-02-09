@@ -155,6 +155,20 @@ export type SocketConfig = {
 	 */
 	groupMetadataCacheMaxSize: number
 
+	/**
+	 * Optional path to persist the in-memory group metadata cache (LRU dump).
+	 * If set, BailMod will load the cache on startup and flush updates to disk (debounced).
+	 *
+	 * Note: this can contain sensitive group info (participants/admins). Store it securely.
+	 */
+	groupMetadataCacheFile?: string
+
+	/**
+	 * Debounce window for persisting group metadata cache to disk (ms).
+	 * Defaults to 5000ms when `groupMetadataCacheFile` is set.
+	 */
+	groupMetadataCacheSaveDebounceMs?: number
+
 	makeSignalRepository: (
 		auth: SignalAuthState,
 		logger: ILogger,

@@ -2,7 +2,10 @@ import { proto } from '../../WAProto/index.js'
 import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
 import { generateMessageIDV2, unixTimestampSeconds } from '../Utils'
+import { Mutex } from 'async-mutex'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { LRUCache } from 'lru-cache'
+import { dirname } from 'path'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -15,10 +18,29 @@ import {
 } from '../WABinary'
 import { makeChatsSocket } from './chats'
 
+// We need to lock cache files due to async read/write (see use-multi-file-auth-state)
+const fileLocks = new Map<string, Mutex>()
+const getFileLock = (path: string): Mutex => {
+	let mutex = fileLocks.get(path)
+	if (!mutex) {
+		mutex = new Mutex()
+		fileLocks.set(path, mutex)
+	}
+
+	return mutex
+}
+
 export const makeGroupsSocket = (config: SocketConfig) => {
 	const sock = makeChatsSocket(config)
 	const { authState, ev, query, upsertMessage } = sock
-	const { logger, cachedGroupMetadata, groupMetadataCacheTtlMs, groupMetadataCacheMaxSize } = config
+	const {
+		logger,
+		cachedGroupMetadata,
+		groupMetadataCacheTtlMs,
+		groupMetadataCacheMaxSize,
+		groupMetadataCacheFile,
+		groupMetadataCacheSaveDebounceMs
+	} = config
 
 	const normalizeGroupJid = (jid: string) => (jid.includes('@') ? jid : jidEncode(jid, 'g.us'))
 
@@ -33,11 +55,76 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			: undefined
 	const inFlightGroupMeta = new Map<string, Promise<GroupMetadata>>()
 
+	// Optional persistence of the in-memory group metadata cache.
+	// Useful for bots that restart often: avoids a burst of WA metadata queries after reboot.
+	const persistPath = groupMetadataCacheFile
+	const persistDebounceMs = Math.max(250, groupMetadataCacheSaveDebounceMs ?? 5000)
+	const persistMutex = persistPath ? getFileLock(persistPath) : undefined
+	let persistDirty = false
+	let persistTimer: NodeJS.Timeout | undefined
+
+	const persistGroupMetaCache = async () => {
+		if (!groupMetaCache || !persistPath || !persistMutex || !persistDirty) return
+
+		persistDirty = false
+		const release = await persistMutex.acquire()
+		try {
+			await mkdir(dirname(persistPath), { recursive: true }).catch(() => {})
+			const dump = groupMetaCache.dump()
+			await writeFile(persistPath, JSON.stringify({ v: 1, dump }), { encoding: 'utf-8' })
+		} catch (err) {
+			logger?.trace({ err, file: persistPath }, 'failed to persist group metadata cache')
+		} finally {
+			release()
+		}
+	}
+
+	const markGroupMetaCacheDirty = () => {
+		if (!groupMetaCache || !persistPath) return
+		persistDirty = true
+		if (persistTimer) return
+
+		persistTimer = setTimeout(() => {
+			persistTimer = undefined
+			void persistGroupMetaCache()
+		}, persistDebounceMs)
+		persistTimer.unref?.()
+	}
+
+	const groupMetaCacheHydration: Promise<void> = (async () => {
+		if (!groupMetaCache || !persistPath || !persistMutex) return
+
+		const release = await persistMutex.acquire()
+		try {
+			const raw = await readFile(persistPath, { encoding: 'utf-8' })
+			const json = JSON.parse(raw) as unknown
+			const dump = (json as any)?.dump
+			// Accept both { dump: ... } and a raw dump array for backwards compatibility.
+			const data = Array.isArray(dump) ? dump : Array.isArray(json) ? (json as any) : undefined
+			if (data) {
+				groupMetaCache.load(data)
+				logger?.debug({ file: persistPath, count: groupMetaCache.size }, 'loaded group metadata cache')
+			}
+		} catch (err: any) {
+			if (err?.code !== 'ENOENT') {
+				logger?.trace({ err, file: persistPath }, 'failed to load group metadata cache')
+			}
+		} finally {
+			release()
+		}
+	})()
+
+	const setCachedGroupMetadata = (id: string, meta: GroupMetadata) => {
+		if (!groupMetaCache) return
+		groupMetaCache.set(id, meta)
+		markGroupMetaCacheDirty()
+	}
+
 	const mergeGroupUpdate = (id: string, update: Partial<GroupMetadata>) => {
 		if (!groupMetaCache) return
 		const existing = groupMetaCache.get(id)
 		if (!existing) return
-		groupMetaCache.set(id, { ...existing, ...update, id })
+		setCachedGroupMetadata(id, { ...existing, ...update, id })
 	}
 
 	const applyParticipantsUpdate = (
@@ -86,7 +173,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		groupMetaCache.set(id, { ...existing, participants: list, size: list.length, id })
+		setCachedGroupMetadata(id, { ...existing, participants: list, size: list.length, id })
 	}
 
 	// Keep cache fresh via events (no extra WA queries)
@@ -121,6 +208,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 	}
 
 	const groupMetadata = async (jid: string) => {
+		await groupMetaCacheHydration
 		jid = normalizeGroupJid(jid)
 		const cached = groupMetaCache?.get(jid)
 		if (cached) return cached
@@ -133,7 +221,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			try {
 				const external = await cachedGroupMetadata(jid)
 				if (external) {
-					groupMetaCache?.set(jid, external)
+					setCachedGroupMetadata(jid, external)
 					return external
 				}
 			} catch (err) {
@@ -141,7 +229,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			}
 
 			const meta = await fetchGroupMetadata(jid)
-			groupMetaCache?.set(jid, meta)
+			setCachedGroupMetadata(jid, meta)
 			return meta
 		})()
 
@@ -183,7 +271,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 					content: [groupNode]
 				})
 				data[meta.id] = meta
-				groupMetaCache?.set(meta.id, meta)
+				setCachedGroupMetadata(meta.id, meta)
 			}
 		}
 
@@ -222,7 +310,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 				}
 			])
 			const meta = extractGroupMetadata(result)
-			groupMetaCache?.set(meta.id, meta)
+			setCachedGroupMetadata(meta.id, meta)
 			return meta
 		},
 		groupLeave: async (id: string) => {
