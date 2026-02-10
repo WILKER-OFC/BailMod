@@ -266,15 +266,72 @@ export type GroupInviteInfo = {
 	subject: string
 }
 
+export type CallCreationInfo = {
+	time?: number
+	title?: string
+	type?: number
+}
+
+export type AdminInviteInfo = {
+	inviteExpiration: number
+	text: string
+	jid: string
+	subject: string
+	thumbnail: Buffer | Uint8Array
+}
+
+export type PaymentInviteInfo = {
+	type?: number
+	expiry?: number
+}
+
+export type RequestPaymentInfo = {
+	expiry: number
+	amount: number
+	currency: string
+	from: string
+	note?: string
+	sticker?: WAMediaUpload
+	/** can be a PaymentBackground object or a background ID */
+	background: string | proto.IPaymentBackground
+	/** add contextInfo to the note message */
+	contextInfo?: proto.IContextInfo
+}
+
+export type OrderInfo = {
+	id: number | string
+	thumbnail: string | Uint8Array
+	itemCount: number
+	status: number
+	surface: number
+	title: string
+	text: string
+	seller: string
+	token: string
+	amount: number
+	currency: string
+}
+
 export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapshot, 'productImage'> & {
 	productImage: WAMediaUpload
 }
 
+export type AlbumMedia =
+	| {
+			image: WAMediaUpload
+			caption?: string
+	  }
+	| {
+			video: WAMediaUpload
+			caption?: string
+			gifPlayback?: boolean
+	  }
+
 export type AnyRegularMessageContent = (
 	| ({
-				text: string
-				linkPreview?: WAUrlInfo | null
-		  } & Mentionable &
+					text: string
+					linkPreview?: WAUrlInfo | null
+			  } & Mentionable &
 				Contextable &
 				Buttonable &
 				Templatable &
@@ -312,24 +369,53 @@ export type AnyRegularMessageContent = (
 	| {
 			listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
 	  }
-	| {
-			pin: WAMessageKey
-			type: proto.PinInChat.Type
-			/**
-			 * 24 hours, 7 days, 30 days
-			 */
-			time?: 86400 | 604800 | 2592000
-	  }
-	| {
-			product: WASendableProduct
-			businessOwnerJid?: string
-			body?: string
-			footer?: string
-	  }
-	| SharePhoneNumber
-	| RequestPhoneNumber
-) &
-	ViewOnce
+		| {
+				pin: WAMessageKey
+				type: proto.PinInChat.Type
+				/**
+				 * 24 hours, 7 days, 30 days
+				 */
+				time?: 86400 | 604800 | 2592000
+		  }
+		| {
+				keep: WAMessageKey
+				type: proto.KeepType | number
+				/**
+				 * 24 hours, 7 days, 90 days
+				 */
+				time?: 86400 | 604800 | 7776000
+		  }
+		| {
+				call: CallCreationInfo
+		  }
+		| {
+				paymentInvite: PaymentInviteInfo
+		  }
+		| {
+				requestPayment: RequestPaymentInfo
+		  }
+		| {
+				order: OrderInfo
+		  }
+		| {
+				inviteAdmin: AdminInviteInfo
+		  }
+		| {
+				product: WASendableProduct
+				businessOwnerJid?: string
+				body?: string
+				footer?: string
+		  }
+		| ({
+				album: AlbumMedia[]
+				caption?: string
+		  } & Mentionable &
+				Contextable &
+				Editable)
+		| SharePhoneNumber
+		| RequestPhoneNumber
+	) &
+		ViewOnce
 
 export type AnyMessageContent =
 	| AnyRegularMessageContent

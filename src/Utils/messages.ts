@@ -852,6 +852,24 @@ export const generateWAMessageContent = async (
 		m.pinInChatMessage.senderTimestampMs = Date.now()
 
 		m.messageContextInfo.messageAddOnDurationInSecs = message.type === 1 ? message.time || 86400 : 0
+	} else if (hasNonNullishProperty(message, 'keep')) {
+		m.keepInChatMessage = {}
+		m.keepInChatMessage.key = message.keep
+		m.keepInChatMessage.keepType = message.type
+		m.keepInChatMessage.timestampMs = Date.now()
+	} else if (hasNonNullishProperty(message, 'call')) {
+		m = {
+			scheduledCallCreationMessage: {
+				scheduledTimestampMs: message.call.time ?? Date.now(),
+				callType: message.call.type ?? 1,
+				title: message.call.title
+			}
+		}
+	} else if (hasNonNullishProperty(message, 'paymentInvite')) {
+		m.paymentInviteMessage = {
+			serviceType: message.paymentInvite.type,
+			expiryTimestamp: message.paymentInvite.expiry
+		}
 	} else if (hasNonNullishProperty(message, 'buttonReply')) {
 		switch (message.type) {
 			case 'template':
@@ -880,6 +898,20 @@ export const generateWAMessageContent = async (
 				...message.product,
 				productImage: imageMessage
 			}
+		})
+	} else if (hasNonNullishProperty(message, 'order')) {
+		m.orderMessage = WAProto.Message.OrderMessage.fromObject({
+			orderId: message.order.id.toString(),
+			thumbnail: message.order.thumbnail,
+			itemCount: message.order.itemCount,
+			status: message.order.status,
+			surface: message.order.surface,
+			orderTitle: message.order.title,
+			message: message.order.text,
+			sellerJid: message.order.seller,
+			token: message.order.token,
+			totalAmount1000: message.order.amount,
+			totalCurrencyCode: message.order.currency
 		})
 	} else if (hasNonNullishProperty(message, 'listReply')) {
 		m.listResponseMessage = { ...message.listReply }
@@ -942,12 +974,63 @@ export const generateWAMessageContent = async (
 				m.pollCreationMessage = pollCreationMessage
 			}
 		}
+	} else if (hasNonNullishProperty(message, 'inviteAdmin')) {
+		m.newsletterAdminInviteMessage = {}
+		m.newsletterAdminInviteMessage.inviteExpiration = message.inviteAdmin.inviteExpiration
+		m.newsletterAdminInviteMessage.caption = message.inviteAdmin.text
+		m.newsletterAdminInviteMessage.newsletterJid = message.inviteAdmin.jid
+		m.newsletterAdminInviteMessage.newsletterName = message.inviteAdmin.subject
+		m.newsletterAdminInviteMessage.jpegThumbnail = message.inviteAdmin.thumbnail
+	} else if (hasNonNullishProperty(message, 'requestPayment')) {
+		const sticker = message.requestPayment.sticker
+			? await prepareWAMessageMedia({ sticker: message.requestPayment.sticker }, options)
+			: null
+
+		let notes: proto.IMessage = {}
+		if (message.requestPayment.sticker) {
+			notes = {
+				stickerMessage: {
+					...sticker?.stickerMessage,
+					contextInfo: message.requestPayment.contextInfo
+				}
+			}
+		} else if (message.requestPayment.note) {
+			notes = {
+				extendedTextMessage: {
+					text: message.requestPayment.note,
+					contextInfo: message.requestPayment.contextInfo
+				}
+			}
+		} else {
+			throw new Boom('Invalid media type', { statusCode: 400 })
+		}
+
+		const bg =
+			typeof message.requestPayment.background === 'string'
+				? { id: message.requestPayment.background }
+				: message.requestPayment.background
+
+		m.requestPaymentMessage = WAProto.Message.RequestPaymentMessage.fromObject({
+			expiryTimestamp: message.requestPayment.expiry,
+			amount1000: message.requestPayment.amount,
+			currencyCodeIso4217: message.requestPayment.currency,
+			requestFrom: message.requestPayment.from,
+			noteMessage: { ...notes },
+			background: bg ?? null
+		})
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
 			type: proto.Message.ProtocolMessage.Type.SHARE_PHONE_NUMBER
 		}
 	} else if (hasNonNullishProperty(message, 'requestPhoneNumber')) {
 		m.requestPhoneNumberMessage = {}
+	} else if (hasNonNullishProperty(message, 'album')) {
+		const imageMessages = message.album.filter(item => 'image' in item)
+		const videoMessages = message.album.filter(item => 'video' in item)
+		m.albumMessage = proto.Message.AlbumMessage.fromObject({
+			expectedImageCount: imageMessages.length,
+			expectedVideoCount: videoMessages.length
+		})
 	} else if (hasNonNullishProperty(message, 'limitSharing')) {
 		m.protocolMessage = {
 			type: proto.Message.ProtocolMessage.Type.LIMIT_SHARING,

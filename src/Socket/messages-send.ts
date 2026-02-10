@@ -1299,9 +1299,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
 				const isPinMsg = 'pin' in content && !!content.pin
+				const isKeepMsg = 'keep' in content && !!content.keep
 				const isPollMessage = 'poll' in content && !!content.poll
 				const additionalAttributes: BinaryNodeAttributes = {}
 				const additionalNodes: BinaryNode[] = []
+
 				// required for delete
 				if (isDeleteMsg) {
 					// if the chat is a group, and I am not the author, then delete the message as an admin
@@ -1314,6 +1316,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					additionalAttributes.edit = '1'
 				} else if (isPinMsg) {
 					additionalAttributes.edit = '2'
+				} else if (isKeepMsg) {
+					// required for keep message
+					additionalAttributes.edit = '6'
 				} else if (isPollMessage) {
 					additionalNodes.push({
 						tag: 'meta',
