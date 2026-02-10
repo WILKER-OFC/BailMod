@@ -796,18 +796,18 @@ export const generateWAMessageContent = async (
 		}
 
 		if (contactLen === 1) {
-			m.contactMessage = WAProto.Message.ContactMessage.create(message.contacts.contacts[0])
+			m.contactMessage = WAProto.Message.ContactMessage.fromObject(message.contacts.contacts[0])
 		} else {
-			m.contactsArrayMessage = WAProto.Message.ContactsArrayMessage.create(message.contacts)
+			m.contactsArrayMessage = WAProto.Message.ContactsArrayMessage.fromObject(message.contacts)
 		}
 	} else if (hasNonNullishProperty(message, 'location')) {
-		m.locationMessage = WAProto.Message.LocationMessage.create(message.location)
+		m.locationMessage = WAProto.Message.LocationMessage.fromObject(message.location)
 	} else if (hasNonNullishProperty(message, 'react')) {
 		if (!message.react.senderTimestampMs) {
 			message.react.senderTimestampMs = Date.now()
 		}
 
-		m.reactionMessage = WAProto.Message.ReactionMessage.create(message.react)
+		m.reactionMessage = WAProto.Message.ReactionMessage.fromObject(message.react)
 	} else if (hasNonNullishProperty(message, 'delete')) {
 		m.protocolMessage = {
 			key: message.delete,
@@ -892,7 +892,7 @@ export const generateWAMessageContent = async (
 		m.ptvMessage = videoMessage
 	} else if (hasNonNullishProperty(message, 'product')) {
 		const { imageMessage } = await prepareWAMessageMedia({ image: message.product.productImage }, options)
-		m.productMessage = WAProto.Message.ProductMessage.create({
+		m.productMessage = WAProto.Message.ProductMessage.fromObject({
 			...message,
 			product: {
 				...message.product,
@@ -1296,7 +1296,7 @@ export const generateWAMessageContent = async (
 		}
 	}
 
-	return WAProto.Message.create(m)
+	return WAProto.Message.fromObject(m)
 }
 
 export const generateWAMessageFromContent = (
