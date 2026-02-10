@@ -58,7 +58,9 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	emitOwnEvents: true,
 	defaultQueryTimeoutMs: 60_000,
 	customUploadHosts: [],
-	retryRequestDelayMs: 250,
+	// Slightly faster retries improves perceived responsiveness when the phone/client is briefly busy.
+	// Kept conservative to avoid hammering WhatsApp.
+	retryRequestDelayMs: 150,
 	maxMsgRetryCount: 5,
 	fireInitQueries: true,
 	auth: undefined as unknown as AuthenticationState,
