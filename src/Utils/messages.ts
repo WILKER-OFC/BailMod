@@ -1136,6 +1136,18 @@ export const generateWAMessageContent = async (
 				hasMediaAttachment: message.media ?? false
 			}
 			Object.assign(interactiveMessage.header, m)
+			// If a header media is present, WhatsApp expects `hasMediaAttachment` to be true.
+			if (
+				interactiveMessage.header &&
+				(interactiveMessage.header.documentMessage ||
+					interactiveMessage.header.imageMessage ||
+					interactiveMessage.header.videoMessage ||
+					interactiveMessage.header.locationMessage ||
+					interactiveMessage.header.productMessage ||
+					interactiveMessage.header.jpegThumbnail)
+			) {
+				interactiveMessage.header.hasMediaAttachment = true
+			}
 		}
 
 		if ('footer' in message && !!message.footer) {
@@ -1149,6 +1161,18 @@ export const generateWAMessageContent = async (
 				hasMediaAttachment: message.media ?? false
 			}
 			Object.assign(interactiveMessage.header, m)
+			// If a header media is present, WhatsApp expects `hasMediaAttachment` to be true.
+			if (
+				interactiveMessage.header &&
+				(interactiveMessage.header.documentMessage ||
+					interactiveMessage.header.imageMessage ||
+					interactiveMessage.header.videoMessage ||
+					interactiveMessage.header.locationMessage ||
+					interactiveMessage.header.productMessage ||
+					interactiveMessage.header.jpegThumbnail)
+			) {
+				interactiveMessage.header.hasMediaAttachment = true
+			}
 		}
 
 		if ('contextInfo' in message && !!message.contextInfo) {
@@ -1179,6 +1203,18 @@ export const generateWAMessageContent = async (
 				hasMediaAttachment: message.media ?? false
 			}
 			Object.assign(interactiveMessage.header, m)
+			// If a header media is present, WhatsApp expects `hasMediaAttachment` to be true.
+			if (
+				interactiveMessage.header &&
+				(interactiveMessage.header.documentMessage ||
+					interactiveMessage.header.imageMessage ||
+					interactiveMessage.header.videoMessage ||
+					interactiveMessage.header.locationMessage ||
+					interactiveMessage.header.productMessage ||
+					interactiveMessage.header.jpegThumbnail)
+			) {
+				interactiveMessage.header.hasMediaAttachment = true
+			}
 		}
 
 		if ('footer' in message && !!message.footer) {
@@ -1192,6 +1228,18 @@ export const generateWAMessageContent = async (
 				hasMediaAttachment: message.media ?? false
 			}
 			Object.assign(interactiveMessage.header, m)
+			// If a header media is present, WhatsApp expects `hasMediaAttachment` to be true.
+			if (
+				interactiveMessage.header &&
+				(interactiveMessage.header.documentMessage ||
+					interactiveMessage.header.imageMessage ||
+					interactiveMessage.header.videoMessage ||
+					interactiveMessage.header.locationMessage ||
+					interactiveMessage.header.productMessage ||
+					interactiveMessage.header.jpegThumbnail)
+			) {
+				interactiveMessage.header.hasMediaAttachment = true
+			}
 		}
 
 		if ('contextInfo' in message && !!message.contextInfo) {

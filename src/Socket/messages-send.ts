@@ -59,6 +59,40 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
+// Protobuf encoding ("fromObject"/"create"/"encode") does not accept `null` for optional fields.
+// Some bot code uses `null` as "unset"; strip them to avoid relayMessage failing to encode.
+const stripNulls = (obj: any): void => {
+	if (!obj || typeof obj !== 'object') {
+		return
+	}
+
+	if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) {
+		return
+	}
+
+	if (Array.isArray(obj)) {
+		for (let i = obj.length - 1; i >= 0; i--) {
+			const v = obj[i]
+			if (v === null) {
+				obj.splice(i, 1)
+			} else {
+				stripNulls(v)
+			}
+		}
+
+		return
+	}
+
+	for (const key of Object.keys(obj)) {
+		const v = obj[key]
+		if (v === null) {
+			delete obj[key]
+		} else {
+			stripNulls(v)
+		}
+	}
+}
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -633,6 +667,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			ai = false
 		}: MessageRelayOptions
 	) => {
+		stripNulls(message as any)
+
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 		const isRetryResend = Boolean(participant?.jid)
