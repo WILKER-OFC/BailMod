@@ -38,10 +38,10 @@ export const executeWMexQuery = async <T>(
 	if (child?.content) {
 		const data = JSON.parse(child.content.toString())
 
-		if (data.errors && data.errors.length > 0) {
-			const errorMessages = data.errors.map((err: Error) => err.message || 'Unknown error').join(', ')
+		if (Array.isArray(data.errors) && data.errors.length > 0) {
+			const errorMessages = data.errors.map((err: any) => err?.message || 'Unknown error').join(', ')
 			const firstError = data.errors[0]
-			const errorCode = firstError.extensions?.error_code || 400
+			const errorCode = firstError?.extensions?.error_code || 400
 			throw new Boom(`GraphQL server error: ${errorMessages}`, { statusCode: errorCode, data: firstError })
 		}
 
@@ -55,4 +55,40 @@ export const executeWMexQuery = async <T>(
 		? dataPath.substring(5).replace(/_/g, ' ')
 		: dataPath?.replace(/_/g, ' ')
 	throw new Boom(`Failed to ${action}, unexpected response structure.`, { statusCode: 400, data: result })
+}
+
+/**
+ * Execute a WMex query where the response data path is unstable or not needed.
+ * Parses and throws GraphQL errors (if present) but does not validate/require a `dataPath`.
+ *
+ * This matches libraries that "fire and forget" mex mutations (eg. newsletter follow/unfollow/mute).
+ */
+export const executeWMexQueryIgnoreResponse = async (
+	variables: Record<string, unknown>,
+	queryId: string,
+	query: (node: BinaryNode) => Promise<BinaryNode>,
+	generateMessageTag: () => string
+): Promise<void> => {
+	const result = await wMexQuery(variables, queryId, query, generateMessageTag)
+	const child = getBinaryNodeChild(result, 'result')
+	if (!child?.content) {
+		// Some mex mutations can return an empty result; treat as success.
+		return
+	}
+
+	let data: any
+	try {
+		data = JSON.parse(child.content.toString())
+	} catch {
+		// If parsing fails, we still consider it a successful fire-and-forget mex mutation.
+		// This mirrors other libs that don't require a stable response shape for these operations.
+		return
+	}
+
+	if (Array.isArray(data.errors) && data.errors.length > 0) {
+		const errorMessages = data.errors.map((err: any) => err?.message || 'Unknown error').join(', ')
+		const firstError = data.errors[0]
+		const errorCode = firstError?.extensions?.error_code || 400
+		throw new Boom(`GraphQL server error: ${errorMessages}`, { statusCode: errorCode, data: firstError })
+	}
 }

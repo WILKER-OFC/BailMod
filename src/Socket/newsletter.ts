@@ -13,7 +13,7 @@ import {
 } from '../WABinary'
 import { LRUCache } from 'lru-cache'
 import { makeGroupsSocket } from './groups'
-import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
+import { executeWMexQuery as genericExecuteWMexQuery, executeWMexQueryIgnoreResponse as genericExecuteWMexQueryIgnoreResponse } from './mex'
 
 export type NewsletterFetchedMessage = {
 	server_id: string
@@ -64,6 +64,10 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 
 	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
 		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	const executeWMexQueryIgnoreResponse = (variables: Record<string, unknown>, queryId: string): Promise<void> => {
+		return genericExecuteWMexQueryIgnoreResponse(variables, queryId, query, generateMessageTag)
 	}
 
 	const newsletterUpdate = async (jid: string, updates: NewsletterUpdate) => {
@@ -383,19 +387,20 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 		},
 
 		newsletterFollow: (jid: string) => {
-			return executeWMexQuery({ newsletter_id: jid }, QueryIds.FOLLOW, XWAPaths.xwa2_newsletter_follow)
+			// WaBail-style: follow is a mex mutation with unstable/empty response; only validate GraphQL errors.
+			return executeWMexQueryIgnoreResponse({ newsletter_id: jid }, QueryIds.FOLLOW)
 		},
 
 		newsletterUnfollow: (jid: string) => {
-			return executeWMexQuery({ newsletter_id: jid }, QueryIds.UNFOLLOW, XWAPaths.xwa2_newsletter_unfollow)
+			return executeWMexQueryIgnoreResponse({ newsletter_id: jid }, QueryIds.UNFOLLOW)
 		},
 
 		newsletterMute: (jid: string) => {
-			return executeWMexQuery({ newsletter_id: jid }, QueryIds.MUTE, XWAPaths.xwa2_newsletter_mute_v2)
+			return executeWMexQueryIgnoreResponse({ newsletter_id: jid }, QueryIds.MUTE)
 		},
 
 		newsletterUnmute: (jid: string) => {
-			return executeWMexQuery({ newsletter_id: jid }, QueryIds.UNMUTE, XWAPaths.xwa2_newsletter_unmute_v2)
+			return executeWMexQueryIgnoreResponse({ newsletter_id: jid }, QueryIds.UNMUTE)
 		},
 
 		newsletterUpdateName: async (jid: string, name: string) => {
@@ -479,19 +484,15 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 		},
 
 		newsletterChangeOwner: async (jid: string, newOwnerJid: string) => {
-			await executeWMexQuery(
-				{ newsletter_id: jid, user_id: newOwnerJid },
-				QueryIds.CHANGE_OWNER,
-				XWAPaths.xwa2_newsletter_change_owner
-			)
+			await executeWMexQueryIgnoreResponse({ newsletter_id: jid, user_id: newOwnerJid }, QueryIds.CHANGE_OWNER)
 		},
 
 		newsletterDemote: async (jid: string, userJid: string) => {
-			await executeWMexQuery({ newsletter_id: jid, user_id: userJid }, QueryIds.DEMOTE, XWAPaths.xwa2_newsletter_demote)
+			await executeWMexQueryIgnoreResponse({ newsletter_id: jid, user_id: userJid }, QueryIds.DEMOTE)
 		},
 
 		newsletterDelete: async (jid: string) => {
-			await executeWMexQuery({ newsletter_id: jid }, QueryIds.DELETE, XWAPaths.xwa2_newsletter_delete_v2)
+			await executeWMexQueryIgnoreResponse({ newsletter_id: jid }, QueryIds.DELETE)
 		}
 	}
 }
