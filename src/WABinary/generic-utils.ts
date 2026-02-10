@@ -100,6 +100,12 @@ export const getBinaryNodeMessages = ({ content }: BinaryNode) => {
 	return msgs
 }
 
+export const getBinaryFilteredBizBot = (nodeContent: BinaryNode[] | undefined) => {
+	if (!Array.isArray(nodeContent)) return false
+
+	return nodeContent.some(b => b?.tag === 'bot' && b?.attrs?.biz_bot === '1')
+}
+
 function bufferToUInt(e: Uint8Array | Buffer, t: number) {
 	let a = 0
 	for (let i = 0; i < t; i++) {

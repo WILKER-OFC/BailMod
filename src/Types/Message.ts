@@ -453,6 +453,8 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
 	statusJidList?: string[]
+	/** if true, suppresses attaching the private-chat "bot"/AI logo metadata node */
+	ai?: boolean
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {
@@ -472,6 +474,8 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
 	font?: number
 	/** if it is broadcast */
 	broadcast?: boolean
+	/** if true, suppresses attaching the private-chat "bot"/AI logo metadata node */
+	ai?: boolean
 }
 export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
 	userJid: string

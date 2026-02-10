@@ -42,6 +42,7 @@ import {
 	type BinaryNode,
 	type BinaryNodeAttributes,
 	type FullJid,
+	getBinaryFilteredBizBot,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isHostedLidUser,
@@ -628,7 +629,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
+			statusJidList,
+			ai = false
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me!.id
@@ -1044,91 +1046,104 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			})
 		}
 
+		// Add the private-chat "bot"/AI logo metadata node (ported from WaBail).
+		if (!ai && isPnUser(jid)) {
+			const botNode: BinaryNode = {
+				tag: 'bot',
+				attrs: { biz_bot: '1' }
+			}
+			const alreadyHasBizBot =
+				getBinaryFilteredBizBot(additionalNodes) || getBinaryFilteredBizBot(stanza.content as BinaryNode[])
+			if (!alreadyHasBizBot) {
+				;(stanza.content as BinaryNode[]).push(botNode)
+			}
+		}
+
 		if (additionalNodes && additionalNodes.length > 0) {
 			;(stanza.content as BinaryNode[]).push(...additionalNodes)
 		}
 
-			const normalizedContent = normalizeMessageContent(message)
-			const contentType = getContentType(normalizedContent)
-			if (
-				(isJidGroup(jid) || isPnUser(jid) || isLidUser(jid)) &&
-				(contentType === 'interactiveMessage' || contentType === 'buttonsMessage' || contentType === 'listMessage')
-			) {
-				// Some native flow / interactive variants require extra biz metadata
-				// (ported from WaBail to improve delivery of more complex native flow payloads).
-				const content = normalizedContent || message
-				const flow = content?.interactiveMessage?.nativeFlowMessage
-				const firstFlowButton = flow?.buttons?.[0]?.name
-				const specialFlowButtons = new Set([
-					'mpm',
-					'cta_catalog',
-					'send_location',
-					'call_permission_request',
-					'wa_payment_transaction_details',
-					'automated_greeting_message_view_catalog'
-				])
+		const normalizedContent = normalizeMessageContent(message)
+		const contentType = getContentType(normalizedContent)
+		if (
+			(isJidGroup(jid) || isPnUser(jid) || isLidUser(jid)) &&
+			(contentType === 'interactiveMessage' || contentType === 'buttonsMessage' || contentType === 'listMessage')
+		) {
+			// Some native flow / interactive variants require extra biz metadata
+			// (ported from WaBail to improve delivery of more complex native flow payloads).
+			const content = normalizedContent || message
+			const flow = content?.interactiveMessage?.nativeFlowMessage
+			const firstFlowButton = flow?.buttons?.[0]?.name
+			const specialFlowButtons = new Set([
+				'mpm',
+				'cta_catalog',
+				'send_location',
+				'call_permission_request',
+				'wa_payment_transaction_details',
+				'automated_greeting_message_view_catalog'
+			])
 
-				const baseBizAttrs: BinaryNodeAttributes = {
-					actual_actors: '2',
-					host_storage: '2',
-					privacy_mode_ts: unixTimestampSeconds().toString()
-				}
-
-				const qualityControlNode: BinaryNode = {
-					tag: 'quality_control',
-					attrs: { source_type: 'third_party' }
-				}
-
-				let bizNode: BinaryNode = { tag: 'biz', attrs: baseBizAttrs }
-
-				if (flow && (firstFlowButton === 'review_and_pay' || firstFlowButton === 'payment_info')) {
-					// Special case: these flows require a native_flow_name attribute
-					bizNode = {
-						tag: 'biz',
-						attrs: {
-							native_flow_name: firstFlowButton === 'review_and_pay' ? 'order_details' : firstFlowButton
-						}
-					}
-				} else if (flow && firstFlowButton && specialFlowButtons.has(firstFlowButton)) {
-					bizNode.content = [
-						{
-							tag: 'interactive',
-							attrs: { type: 'native_flow', v: '1' },
-							content: [
-								{
-									tag: 'native_flow',
-									attrs: { v: '2', name: firstFlowButton }
-								}
-							]
-						},
-						qualityControlNode
-					]
-				} else if (contentType === 'interactiveMessage' || contentType === 'buttonsMessage') {
-					bizNode.content = [
-						{
-							tag: 'interactive',
-							attrs: { type: 'native_flow', v: '1' },
-							content: [
-								{
-									tag: 'native_flow',
-									attrs: { v: '9', name: 'mixed' }
-								}
-							]
-						},
-						qualityControlNode
-					]
-				} else if (contentType === 'listMessage') {
-					bizNode.content = [
-						{
-							tag: 'list',
-							attrs: { v: '2', type: 'product_list' }
-						},
-						qualityControlNode
-					]
-				}
-
-				;(stanza.content as BinaryNode[]).push(bizNode)
+			const baseBizAttrs: BinaryNodeAttributes = {
+				actual_actors: '2',
+				host_storage: '2',
+				privacy_mode_ts: unixTimestampSeconds().toString()
 			}
+
+			const qualityControlNode: BinaryNode = {
+				tag: 'quality_control',
+				attrs: { source_type: 'third_party' }
+			}
+
+			let bizNode: BinaryNode = { tag: 'biz', attrs: baseBizAttrs }
+
+			if (flow && (firstFlowButton === 'review_and_pay' || firstFlowButton === 'payment_info')) {
+				// Special case: these flows require a native_flow_name attribute
+				bizNode = {
+					tag: 'biz',
+					attrs: {
+						native_flow_name: firstFlowButton === 'review_and_pay' ? 'order_details' : firstFlowButton
+					}
+				}
+			} else if (flow && firstFlowButton && specialFlowButtons.has(firstFlowButton)) {
+				bizNode.content = [
+					{
+						tag: 'interactive',
+						attrs: { type: 'native_flow', v: '1' },
+						content: [
+							{
+								tag: 'native_flow',
+								attrs: { v: '2', name: firstFlowButton }
+							}
+						]
+					},
+					qualityControlNode
+				]
+			} else if (contentType === 'interactiveMessage' || contentType === 'buttonsMessage') {
+				bizNode.content = [
+					{
+						tag: 'interactive',
+						attrs: { type: 'native_flow', v: '1' },
+						content: [
+							{
+								tag: 'native_flow',
+								attrs: { v: '9', name: 'mixed' }
+							}
+						]
+					},
+					qualityControlNode
+				]
+			} else if (contentType === 'listMessage') {
+				bizNode.content = [
+					{
+						tag: 'list',
+						attrs: { v: '2', type: 'product_list' }
+					},
+					qualityControlNode
+				]
+			}
+
+			;(stanza.content as BinaryNode[]).push(bizNode)
+		}
 
 		logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
@@ -1384,7 +1399,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
 					additionalAttributes,
 					statusJidList: options.statusJidList,
-					additionalNodes
+					additionalNodes,
+					ai: options.ai
 				})
 				if (config.emitOwnEvents) {
 					process.nextTick(async () => {
