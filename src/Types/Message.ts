@@ -122,6 +122,46 @@ type ViewOnce = {
 	viewOnce?: boolean
 }
 
+type Buttonable = {
+	/** add buttons to the message  */
+	buttons?: proto.Message.ButtonsMessage.IButton[]
+}
+type Templatable = {
+	/** add buttons to the message (conflicts with normal buttons)*/
+	templateButtons?: proto.IHydratedTemplateButton[]
+	footer?: string
+}
+type Interactiveable = {
+	/** add interactive (native flow) buttons to the message */
+	interactiveButtons?: proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton[]
+	title?: string
+	subtitle?: string
+	/** whether interactive header has a media attachment */
+	media?: boolean
+}
+type Shopable = {
+	shop?: proto.Message.InteractiveMessage.ShopMessage.Surface
+	id?: string
+	title?: string
+	subtitle?: string
+	/** whether interactive header has a media attachment */
+	media?: boolean
+}
+type Cardsable = {
+	cards?: string[]
+	subtitle?: string
+}
+type Listable = {
+	/** Sections of the List */
+	sections?: proto.Message.ListMessage.ISection[]
+	/** Title of a List Message only */
+	title?: string
+	/** Text of the button on the list (required) */
+	buttonText?: string
+	/** ListType of a List Message only */
+	listType?: proto.Message.ListMessage.ListType
+}
+
 type Editable = {
 	edit?: WAMessageKey
 }
@@ -162,26 +202,36 @@ type RequestPhoneNumber = {
 
 export type AnyMediaMessageContent = (
 	| ({
-			image: WAMediaUpload
-			caption?: string
-			jpegThumbnail?: string
-	  } & Mentionable &
-			Contextable &
-			WithDimensions)
+				image: WAMediaUpload
+				caption?: string
+				jpegThumbnail?: string
+		  } & Mentionable &
+				Contextable &
+				Buttonable &
+				Templatable &
+				Interactiveable &
+				Shopable &
+				Cardsable &
+				WithDimensions)
 	| ({
-			video: WAMediaUpload
-			caption?: string
-			gifPlayback?: boolean
+				video: WAMediaUpload
+				caption?: string
+				gifPlayback?: boolean
 			jpegThumbnail?: string
-			/** if set to true, will send as a `video note` */
-			ptv?: boolean
-	  } & Mentionable &
-			Contextable &
-			WithDimensions)
+				/** if set to true, will send as a `video note` */
+				ptv?: boolean
+		  } & Mentionable &
+				Contextable &
+				Buttonable &
+				Templatable &
+				Interactiveable &
+				Shopable &
+				Cardsable &
+				WithDimensions)
 	| {
-			audio: WAMediaUpload
-			/** if set to true, will send as a `voice note` */
-			ptt?: boolean
+				audio: WAMediaUpload
+				/** if set to true, will send as a `voice note` */
+				ptt?: boolean
 			/** optionally tell the duration of the audio */
 			seconds?: number
 	  }
@@ -190,11 +240,16 @@ export type AnyMediaMessageContent = (
 			isAnimated?: boolean
 	  } & WithDimensions)
 	| ({
-			document: WAMediaUpload
-			mimetype: string
-			fileName?: string
-			caption?: string
-	  } & Contextable)
+				document: WAMediaUpload
+				mimetype: string
+				fileName?: string
+				caption?: string
+		  } & Contextable &
+				Buttonable &
+				Templatable &
+				Interactiveable &
+				Shopable &
+				Cardsable)
 ) & { mimetype?: string } & Editable
 
 export type ButtonReplyInfo = {
@@ -217,22 +272,30 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 
 export type AnyRegularMessageContent = (
 	| ({
-			text: string
-			linkPreview?: WAUrlInfo | null
-	  } & Mentionable &
-			Contextable &
-			Editable)
+				text: string
+				linkPreview?: WAUrlInfo | null
+		  } & Mentionable &
+				Contextable &
+				Buttonable &
+				Templatable &
+				Interactiveable &
+				Shopable &
+				Cardsable &
+				Listable &
+				Editable)
 	| AnyMediaMessageContent
 	| { event: EventMessageOptions }
 	| ({
-			poll: PollMessageOptions
-	  } & Mentionable &
-			Contextable &
-			Editable)
+				poll: PollMessageOptions
+		  } & Mentionable &
+				Contextable &
+				Buttonable &
+				Templatable &
+				Editable)
 	| {
-			contacts: {
-				displayName?: string
-				contacts: proto.Message.IContactMessage[]
+				contacts: {
+					displayName?: string
+					contacts: proto.Message.IContactMessage[]
 			}
 	  }
 	| {
