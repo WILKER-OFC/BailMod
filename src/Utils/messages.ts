@@ -796,7 +796,12 @@ export const generateWAMessageContent = async (
 		}
 
 		if (contactLen === 1) {
-			m.contactMessage = WAProto.Message.ContactMessage.fromObject(message.contacts.contacts[0])
+			// TypeScript cannot narrow array indexing, but we've validated `contactLen === 1` above.
+			const contact = message.contacts.contacts[0]
+			if (!contact) {
+				throw new Boom('invalid contact payload', { statusCode: 400 })
+			}
+			m.contactMessage = WAProto.Message.ContactMessage.fromObject(contact as { [k: string]: any })
 		} else {
 			m.contactsArrayMessage = WAProto.Message.ContactsArrayMessage.fromObject(message.contacts)
 		}
