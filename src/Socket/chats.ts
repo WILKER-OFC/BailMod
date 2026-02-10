@@ -256,7 +256,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return id
 		}
 
-		// keep constants aligned with the referenced baileys mod implementation
 		const WA_VERSION = '2.25.23.24'
 		const WA_VERSION_HASH = createHash('md5').update(WA_VERSION).digest('hex')
 		const MOBILE_TOKEN = Buffer.from(`0a1mLfGUIBVrMKF1RdvLI5lkRBvof6vn0fD2QRSM${WA_VERSION_HASH}`)
