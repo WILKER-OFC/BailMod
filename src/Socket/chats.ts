@@ -67,6 +67,25 @@ const DEFAULT_MOBILE_WA_VERSION = '2.25.23.24'
 const MOBILE_WA_VERSION_CACHE_TTL_MS = 1000 * 60 * 60 * 12 // 12 hours
 let cachedMobileWAVersion: { value: string; fetchedAtMs: number } | undefined
 
+type BanViolationInfo = {
+	description: string
+	duration: string
+	risk: string
+	status: string
+	isPermanent?: boolean
+}
+
+const BAN_VIOLATION_INFO_BY_TYPE: Record<string, BanViolationInfo> = {
+	// Observed violation_type = 14.
+	'14': {
+		description: 'Severe policy violation.',
+		duration: 'Under review (6-24 hours)',
+		risk: 'Very high',
+		status: 'Pending internal review',
+		isPermanent: false
+	}
+}
+
 const normalizeMobileWAVersion = (version: string) => {
 	const trimmed = version.trim()
 	if (!/^\d+(\.\d+){1,3}$/.test(trimmed)) return undefined
@@ -256,26 +275,28 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			throw new Error('enter jid')
 		}
 
-			const resultData: {
+		const resultData: {
+			isBanned: boolean
+			isNeedOfficialWa: boolean
+			number: string
+			data?: {
 				isBanned: boolean
+				isPermanent: boolean
 				isNeedOfficialWa: boolean
-				number: string
-				data?: {
-					violation_type?: string
-					in_app_ban_appeal?: any
-					appeal_token?: string
-					reason?: string
-					retry_after?: number
-					retry_after_human?: string
-					ban_until?: string
-					is_temporary?: boolean
-					is_permanent?: boolean
-					wa_version?: string
-				}
-			} = {
-				isBanned: false,
-				isNeedOfficialWa: false,
-				number: jid
+				violation_type?: string
+				violation_info?: Omit<BanViolationInfo, 'isPermanent'>
+				in_app_ban_appeal?: any
+				appeal_token?: string
+				reason?: string
+				retry_after?: number
+				retry_after_human?: string
+				ban_until?: string
+				wa_version?: string
+			}
+		} = {
+			isBanned: false,
+			isNeedOfficialWa: false,
+			number: jid
 		}
 
 		let phoneNumber = jid
@@ -455,11 +476,30 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return mobileRegisterCode(makeMobileParams())
 		}
 
+		const formatDurationSeconds = (seconds: number) => {
+			const sec = Math.max(0, Math.floor(seconds))
+			const days = Math.floor(sec / 86400)
+			const hours = Math.floor((sec % 86400) / 3600)
+			const mins = Math.floor((sec % 3600) / 60)
+			const parts: string[] = []
+			if (days) parts.push(`${days}d`)
+			if (hours) parts.push(`${hours}h`)
+			if (mins) parts.push(`${mins}m`)
+			if (!parts.length) parts.push(`${sec}s`)
+			return parts.join(' ')
+		}
+
 		let waVersion = await getMobileWAVersion()
 		let err: any
 
 		try {
 			await attemptRegisterCode(waVersion)
+			resultData.data = {
+				isBanned: false,
+				isPermanent: false,
+				isNeedOfficialWa: false,
+				wa_version: waVersion
+			}
 			return JSON.stringify(resultData, null, 2)
 		} catch (caught: any) {
 			err = caught
@@ -488,9 +528,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					? Number(err.retry_after)
 					: undefined
 
-		const violationType = err?.violation_type !== null && err?.violation_type !== undefined ? String(err.violation_type) : undefined
+		const violationType =
+			err?.violation_type !== null && err?.violation_type !== undefined ? String(err.violation_type) : undefined
 		const appealToken = typeof err?.appeal_token === 'string' ? err.appeal_token : undefined
-		const inAppBanAppeal = err?.in_app_ban_appeal !== null && err?.in_app_ban_appeal !== undefined ? err.in_app_ban_appeal : undefined
+		const inAppBanAppeal =
+			err?.in_app_ban_appeal !== null && err?.in_app_ban_appeal !== undefined ? err.in_app_ban_appeal : undefined
 
 		const isTempBanLike =
 			reasonLc === 'temporarily_unavailable' ||
@@ -505,35 +547,37 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const needsOfficialApp =
 			!!err?.custom_block_screen ||
 			reasonLc === 'no_routes' ||
-			(reasonLc ? reasonLc.includes('support') : false) ||
-			violationType === '14' // common for third-party client enforcement
+			(reasonLc ? reasonLc.includes('support') : false)
 
 		if (needsOfficialApp) {
 			resultData.isNeedOfficialWa = true
 		}
 
-		// Only set "banned" for strong signals. Temporary throttles/holds should not flip this.
-		const isBanned = !!appealToken || reasonLc === 'blocked' || violationType !== undefined
+		// Only set "banned" for strong signals.
+		const isBanned =
+			reasonLc === 'blocked' || !!appealToken || (reasonLc ? reasonLc.includes('ban') || reasonLc.includes('banned') : false)
 		resultData.isBanned = isBanned
 
-		const isTemporary = retryAfter !== undefined || isTempBanLike
-		const isPermanent = isBanned && !isTemporary
+		const violationInfo = violationType ? BAN_VIOLATION_INFO_BY_TYPE[violationType] : undefined
 
-		const formatDurationSeconds = (seconds: number) => {
-			const sec = Math.max(0, Math.floor(seconds))
-			const days = Math.floor(sec / 86400)
-			const hours = Math.floor((sec % 86400) / 3600)
-			const mins = Math.floor((sec % 3600) / 60)
-			const parts: string[] = []
-			if (days) parts.push(`${days}d`)
-			if (hours) parts.push(`${hours}h`)
-			if (mins) parts.push(`${mins}m`)
-			if (!parts.length) parts.push(`${sec}s`)
-			return parts.join(' ')
+		const isTemporary = !isBanned && (retryAfter !== undefined || isTempBanLike)
+		const isPermanent =
+			isBanned &&
+			retryAfter === undefined &&
+			(violationInfo?.isPermanent !== undefined ? violationInfo.isPermanent : true)
+
+		const data: NonNullable<typeof resultData.data> = {
+			isBanned,
+			isPermanent,
+			isNeedOfficialWa: resultData.isNeedOfficialWa,
+			wa_version: waVersion
 		}
 
-		const data: NonNullable<typeof resultData.data> = {}
 		if (violationType) data.violation_type = violationType
+		if (violationInfo) {
+			const { isPermanent: _ignore, ...rest } = violationInfo
+			data.violation_info = rest
+		}
 		if (inAppBanAppeal !== undefined) data.in_app_ban_appeal = inAppBanAppeal
 		if (appealToken) data.appeal_token = appealToken
 		if (reason) data.reason = reason
@@ -542,9 +586,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			data.retry_after_human = formatDurationSeconds(retryAfter)
 			data.ban_until = new Date(Date.now() + retryAfter * 1000).toISOString()
 		}
-		data.is_temporary = isTemporary
-		data.is_permanent = isPermanent
-		data.wa_version = waVersion
+
 		resultData.data = data
 
 		return JSON.stringify(resultData, null, 2)
