@@ -191,29 +191,31 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		await privacyQuery('readreceipts', value)
 	}
 
-		const updateGroupsAddPrivacy = async (value: WAPrivacyGroupAddValue) => {
-			await privacyQuery('groupadd', value)
+	const updateGroupsAddPrivacy = async (value: WAPrivacyGroupAddValue) => {
+		await privacyQuery('groupadd', value)
+	}
+
+	const checkWhatsApp = async (jid: string) => {
+		if (!jid) {
+			throw new Error('enter jid')
 		}
 
-		const checkWhatsApp = async (jid: string) => {
-			if (!jid) {
-				throw new Error('enter jid')
+		const resultData: {
+			isBanned: boolean
+			isNeedOfficialWa: boolean
+			number: string
+			data?: {
+				violation_type: string | null
+				in_app_ban_appeal: any
+				appeal_token: string | null
+				reason?: string | null
+				retry_after?: number | null
 			}
-
-			const resultData: {
-				isBanned: boolean
-				isNeedOfficialWa: boolean
-				number: string
-				data?: {
-					violation_type: string | null
-					in_app_ban_appeal: any
-					appeal_token: string | null
-				}
-			} = {
-				isBanned: false,
-				isNeedOfficialWa: false,
-				number: jid
-			}
+		} = {
+			isBanned: false,
+			isNeedOfficialWa: false,
+			number: jid
+		}
 
 			let phoneNumber = jid
 			const atIndex = phoneNumber.indexOf('@')
@@ -386,20 +388,57 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				await mobileRegisterCode(mobileParams)
 				return JSON.stringify(resultData, null, 2)
 			} catch (err: any) {
-				if (err?.appeal_token) {
+				const reason = typeof err?.reason === 'string' ? err.reason : undefined
+				const reasonLc = reason?.toLowerCase()
+				const retryAfter =
+					typeof err?.retry_after === 'number'
+						? err.retry_after
+						: typeof err?.retry_after === 'string' && /^\d+$/.test(err.retry_after)
+							? Number(err.retry_after)
+							: undefined
+
+				// "custom_block_screen" is typically returned when WhatsApp wants the user to use the official app.
+				if (err?.custom_block_screen) {
+					resultData.isNeedOfficialWa = true
+				}
+
+				// Some bans/blocks (including temporary ones) don't include an appeal token.
+				const isTempBanLike =
+					reasonLc === 'temporarily_unavailable' ||
+					reasonLc === 'too_recent' ||
+					reasonLc === 'too_many' ||
+					reasonLc === 'too_many_requests' ||
+					reasonLc === 'too_many_attempts' ||
+					reasonLc === 'too_many_guesses' ||
+					reasonLc === 'rate_limit'
+
+				if (
+					err?.appeal_token ||
+					reasonLc === 'blocked' ||
+					isTempBanLike ||
+					(reasonLc &&
+						(reasonLc.includes('ban') ||
+							reasonLc.includes('banned') ||
+							reasonLc.includes('block') ||
+							reasonLc.includes('support')))
+				) {
 					resultData.isBanned = true
+				}
+
+				// Include server details to make debugging/mapping easier for callers.
+				if (reason || retryAfter !== undefined || err?.appeal_token || err?.violation_type || err?.in_app_ban_appeal) {
 					resultData.data = {
 						violation_type: err.violation_type || null,
 						in_app_ban_appeal: err.in_app_ban_appeal || null,
-						appeal_token: err.appeal_token || null
+						appeal_token: err.appeal_token || null,
+						reason: reason || null,
+						retry_after: retryAfter ?? null
 					}
-				} else if (err?.custom_block_screen || err?.reason === 'blocked') {
-					resultData.isNeedOfficialWa = true
 				}
 
 				return JSON.stringify(resultData, null, 2)
 			}
-		}
+			}
 
 	const updateDefaultDisappearingMode = async (duration: number) => {
 		await query({
