@@ -63,6 +63,62 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeSocket } from './socket.js'
 const MAX_SYNC_ATTEMPTS = 2
 
+const DEFAULT_MOBILE_WA_VERSION = '2.25.23.24'
+const MOBILE_WA_VERSION_CACHE_TTL_MS = 1000 * 60 * 60 * 12 // 12 hours
+let cachedMobileWAVersion: { value: string; fetchedAtMs: number } | undefined
+
+const normalizeMobileWAVersion = (version: string) => {
+	const trimmed = version.trim()
+	if (!/^\d+(\.\d+){1,3}$/.test(trimmed)) return undefined
+	return trimmed.startsWith('2.') ? trimmed : `2.${trimmed}`
+}
+
+const fetchLatestMobileWAVersionFromApple = async () => {
+	try {
+		// WhatsApp Messenger iOS app id
+		const resp = await fetch('https://itunes.apple.com/lookup?id=310633997&country=us', {
+			headers: {
+				'User-Agent': 'BailMod'
+			}
+		})
+		if (!resp.ok) return undefined
+
+		const json: any = await resp.json()
+		const version = json?.results?.[0]?.version
+		if (typeof version !== 'string') return undefined
+
+		return normalizeMobileWAVersion(version)
+	} catch {
+		return undefined
+	}
+}
+
+const getMobileWAVersion = async ({ forceRefresh }: { forceRefresh?: boolean } = {}) => {
+	const envOverride =
+		process.env.BAILMOD_MOBILE_WA_VERSION || process.env.WA_MOBILE_VERSION || process.env.WHATSAPP_MOBILE_VERSION
+	if (envOverride) {
+		const normalized = normalizeMobileWAVersion(envOverride)
+		if (normalized) return normalized
+	}
+
+	const now = Date.now()
+	if (
+		!forceRefresh &&
+		cachedMobileWAVersion &&
+		now - cachedMobileWAVersion.fetchedAtMs < MOBILE_WA_VERSION_CACHE_TTL_MS
+	) {
+		return cachedMobileWAVersion.value
+	}
+
+	const latest = await fetchLatestMobileWAVersionFromApple()
+	if (latest) {
+		cachedMobileWAVersion = { value: latest, fetchedAtMs: now }
+		return latest
+	}
+
+	return DEFAULT_MOBILE_WA_VERSION
+}
+
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -210,6 +266,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				appeal_token: string | null
 				reason?: string | null
 				retry_after?: number | null
+				wa_version?: string | null
 			}
 		} = {
 			isBanned: false,
@@ -217,73 +274,73 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			number: jid
 		}
 
-			let phoneNumber = jid
-			const atIndex = phoneNumber.indexOf('@')
-			if (atIndex !== -1) phoneNumber = phoneNumber.slice(0, atIndex)
-			const colonIndex = phoneNumber.indexOf(':')
-			if (colonIndex !== -1) phoneNumber = phoneNumber.slice(0, colonIndex)
+		let phoneNumber = jid
+		const atIndex = phoneNumber.indexOf('@')
+		if (atIndex !== -1) phoneNumber = phoneNumber.slice(0, atIndex)
+		const colonIndex = phoneNumber.indexOf(':')
+		if (colonIndex !== -1) phoneNumber = phoneNumber.slice(0, colonIndex)
 
-			phoneNumber = phoneNumber.replace(/[^\d+]/g, '')
+		phoneNumber = phoneNumber.replace(/[^\d+]/g, '')
 
-			if (phoneNumber.startsWith('00')) {
-				phoneNumber = `+${phoneNumber.slice(2)}`
-			} else if (!phoneNumber.startsWith('+') && phoneNumber.length > 0) {
-				phoneNumber = `+${phoneNumber}`
-			}
+		if (phoneNumber.startsWith('00')) {
+			phoneNumber = `+${phoneNumber.slice(2)}`
+		} else if (!phoneNumber.startsWith('+') && phoneNumber.length > 0) {
+			phoneNumber = `+${phoneNumber}`
+		}
 
-			let parsedNumber: ReturnType<typeof parsePhoneNumber>
-			try {
-				parsedNumber = parsePhoneNumber(phoneNumber)
-			} catch (_err) {
-				throw new Error('invalid jid/phone number')
-			}
+		let parsedNumber: ReturnType<typeof parsePhoneNumber>
+		try {
+			parsedNumber = parsePhoneNumber(phoneNumber)
+		} catch (_err) {
+			throw new Error('invalid jid/phone number')
+		}
 
-			const countryCode = parsedNumber.countryCallingCode
-			const nationalNumber = parsedNumber.nationalNumber
+		const countryCode = parsedNumber.countryCallingCode
+		const nationalNumber = parsedNumber.nationalNumber
 
-			const urlencode = (str: string) => str.replace(/-/g, '%2d').replace(/_/g, '%5f').replace(/~/g, '%7e')
+		const urlencode = (str: string) => str.replace(/-/g, '%2d').replace(/_/g, '%5f').replace(/~/g, '%7e')
 
-			const convertBufferToUrlHex = (buffer: Buffer) => {
-				let id = ''
-				buffer.forEach(x => {
-					id += `%${x.toString(16).padStart(2, '0').toLowerCase()}`
-				})
-				return id
-			}
+		const convertBufferToUrlHex = (buffer: Buffer) => {
+			let id = ''
+			buffer.forEach(x => {
+				id += `%${x.toString(16).padStart(2, '0').toLowerCase()}`
+			})
+			return id
+		}
 
-			const WA_VERSION = '2.25.23.24'
-			const WA_VERSION_HASH = createHash('md5').update(WA_VERSION).digest('hex')
-			const MOBILE_TOKEN = Buffer.from(`0a1mLfGUIBVrMKF1RdvLI5lkRBvof6vn0fD2QRSM${WA_VERSION_HASH}`)
-			const MOBILE_REGISTRATION_ENDPOINT = 'https://v.whatsapp.net/v2'
-			const MOBILE_USERAGENT = `WhatsApp/${WA_VERSION} iOS/17.5.1 Device/Apple-iPhone_13`
+		type MobileRegisterParams = {
+			registrationId: number
+			noiseKey: { public: Uint8Array }
+			signedIdentityKey: { public: Uint8Array }
+			signedPreKey: { keyId: number; keyPair: { public: Uint8Array }; signature: Uint8Array }
+			deviceId: string
+			phoneId: string
+			identityId: Buffer
+			backupToken: Buffer
+			phoneNumberCountryCode: string
+			phoneNumberNationalNumber: string
+			phoneNumberMobileCountryCode: string
+			phoneNumberMobileNetworkCode?: string
+			method?: string
+			captcha?: string
+		}
 
-			type MobileRegisterParams = {
-				registrationId: number
-				noiseKey: { public: Uint8Array }
-				signedIdentityKey: { public: Uint8Array }
-				signedPreKey: { keyId: number; keyPair: { public: Uint8Array }; signature: Uint8Array }
-				deviceId: string
-				phoneId: string
-				identityId: Buffer
-				backupToken: Buffer
-				phoneNumberCountryCode: string
-				phoneNumberNationalNumber: string
-				phoneNumberMobileCountryCode: string
-				phoneNumberMobileNetworkCode?: string
-				method?: string
-				captcha?: string
-			}
+		const buildMobileRegisterCode = (waVersion: string) => {
+			const waVersionHash = createHash('md5').update(waVersion).digest('hex')
+			const mobileToken = Buffer.from(`0a1mLfGUIBVrMKF1RdvLI5lkRBvof6vn0fD2QRSM${waVersionHash}`)
+			const mobileUserAgent = `WhatsApp/${waVersion} iOS/17.5.1 Device/Apple-iPhone_13`
+			const mobileRegistrationEndpoint = 'https://v.whatsapp.net/v2'
 
 			const registrationParams = (params: MobileRegisterParams) => {
 				const e_regid = Buffer.alloc(4)
 				e_regid.writeInt32BE(params.registrationId)
 
-				params.phoneNumberCountryCode = params.phoneNumberCountryCode.replace('+', '').trim()
-				params.phoneNumberNationalNumber = params.phoneNumberNationalNumber.replace(/[/-\s)(]/g, '').trim()
+				const phoneNumberCountryCode = params.phoneNumberCountryCode.replace('+', '').trim()
+				const phoneNumberNationalNumber = params.phoneNumberNationalNumber.replace(/[/-\s)(]/g, '').trim()
 
 				return {
-					cc: params.phoneNumberCountryCode,
-					in: params.phoneNumberNationalNumber,
+					cc: phoneNumberCountryCode,
+					in: phoneNumberNationalNumber,
 					Rc: '0',
 					lg: 'en',
 					lc: 'GB',
@@ -303,7 +360,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					pid: Math.floor(Math.random() * 1000).toString(),
 					id: convertBufferToUrlHex(params.identityId),
 					backup_token: convertBufferToUrlHex(params.backupToken),
-					token: md5(Buffer.concat([MOBILE_TOKEN, Buffer.from(params.phoneNumberNationalNumber)])).toString('hex'),
+					token: md5(Buffer.concat([mobileToken, Buffer.from(phoneNumberNationalNumber)])).toString('hex'),
 					fraud_checkpoint_code: params.captcha
 				}
 			}
@@ -312,7 +369,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				path: string,
 				opts: (RequestInit & { params?: Record<string, any> }) = {}
 			) => {
-				let url = `${MOBILE_REGISTRATION_ENDPOINT}${path}`
+				let url = `${mobileRegistrationEndpoint}${path}`
 				if (opts.params) {
 					const parameter: string[] = []
 					for (const param in opts.params) {
@@ -326,7 +383,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}
 
 				const headers = new Headers(opts.headers || {})
-				headers.set('User-Agent', MOBILE_USERAGENT)
+				headers.set('User-Agent', mobileUserAgent)
 
 				const { body: _body, method: _method, ...rest } = opts as RequestInit
 				const response = await fetch(url, { ...rest, method: 'GET', headers })
@@ -364,11 +421,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				})
 			}
 
+			return { mobileRegisterCode, waVersion }
+		}
+
+		const makeMobileParams = (): MobileRegisterParams => {
 			const identityKey = Curve.generateKeyPair()
 			const uuidHex = randomUUID().replace(/-/g, '')
 			const deviceId = Buffer.from(uuidHex, 'hex').toString('base64url')
 
-			const mobileParams: MobileRegisterParams = {
+			return {
 				registrationId: generateRegistrationId(),
 				noiseKey: Curve.generateKeyPair(),
 				signedIdentityKey: identityKey,
@@ -383,62 +444,83 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				phoneNumberMobileNetworkCode: '10',
 				method: 'sms'
 			}
+		}
 
-			try {
-				await mobileRegisterCode(mobileParams)
-				return JSON.stringify(resultData, null, 2)
-			} catch (err: any) {
-				const reason = typeof err?.reason === 'string' ? err.reason : undefined
-				const reasonLc = reason?.toLowerCase()
-				const retryAfter =
-					typeof err?.retry_after === 'number'
-						? err.retry_after
-						: typeof err?.retry_after === 'string' && /^\d+$/.test(err.retry_after)
-							? Number(err.retry_after)
-							: undefined
+		const attemptRegisterCode = (waVersion: string) => {
+			const { mobileRegisterCode } = buildMobileRegisterCode(waVersion)
+			return mobileRegisterCode(makeMobileParams())
+		}
 
-				// "custom_block_screen" is typically returned when WhatsApp wants the user to use the official app.
-				if (err?.custom_block_screen) {
-					resultData.isNeedOfficialWa = true
+		let waVersion = await getMobileWAVersion()
+		let err: any
+
+		try {
+			await attemptRegisterCode(waVersion)
+			return JSON.stringify(resultData, null, 2)
+		} catch (caught: any) {
+			err = caught
+		}
+
+		const reason1 = typeof err?.reason === 'string' ? err.reason : undefined
+		if (reason1?.toLowerCase() === 'old_version') {
+			const refreshed = await getMobileWAVersion({ forceRefresh: true })
+			if (refreshed && refreshed !== waVersion) {
+				waVersion = refreshed
+				try {
+					await attemptRegisterCode(waVersion)
+					return JSON.stringify(resultData, null, 2)
+				} catch (caught: any) {
+					err = caught
 				}
-
-				// Some bans/blocks (including temporary ones) don't include an appeal token.
-				const isTempBanLike =
-					reasonLc === 'temporarily_unavailable' ||
-					reasonLc === 'too_recent' ||
-					reasonLc === 'too_many' ||
-					reasonLc === 'too_many_requests' ||
-					reasonLc === 'too_many_attempts' ||
-					reasonLc === 'too_many_guesses' ||
-					reasonLc === 'rate_limit'
-
-				if (
-					err?.appeal_token ||
-					reasonLc === 'blocked' ||
-					isTempBanLike ||
-					(reasonLc &&
-						(reasonLc.includes('ban') ||
-							reasonLc.includes('banned') ||
-							reasonLc.includes('block') ||
-							reasonLc.includes('support')))
-				) {
-					resultData.isBanned = true
-				}
-
-				// Include server details to make debugging/mapping easier for callers.
-				if (reason || retryAfter !== undefined || err?.appeal_token || err?.violation_type || err?.in_app_ban_appeal) {
-					resultData.data = {
-						violation_type: err.violation_type || null,
-						in_app_ban_appeal: err.in_app_ban_appeal || null,
-						appeal_token: err.appeal_token || null,
-						reason: reason || null,
-						retry_after: retryAfter ?? null
-					}
-				}
-
-				return JSON.stringify(resultData, null, 2)
 			}
-			}
+		}
+
+		const reason = typeof err?.reason === 'string' ? err.reason : undefined
+		const reasonLc = reason?.toLowerCase()
+		const retryAfter =
+			typeof err?.retry_after === 'number'
+				? err.retry_after
+				: typeof err?.retry_after === 'string' && /^\d+$/.test(err.retry_after)
+					? Number(err.retry_after)
+					: undefined
+
+		if (err?.custom_block_screen) {
+			resultData.isNeedOfficialWa = true
+		}
+
+		const isTempBanLike =
+			reasonLc === 'temporarily_unavailable' ||
+			reasonLc === 'too_recent' ||
+			reasonLc === 'too_many' ||
+			reasonLc === 'too_many_requests' ||
+			reasonLc === 'too_many_attempts' ||
+			reasonLc === 'too_many_guesses' ||
+			reasonLc === 'rate_limit'
+
+		if (
+			err?.appeal_token ||
+			reasonLc === 'blocked' ||
+			isTempBanLike ||
+			(reasonLc &&
+				(reasonLc.includes('ban') ||
+					reasonLc.includes('banned') ||
+					reasonLc.includes('block') ||
+					reasonLc.includes('support')))
+		) {
+			resultData.isBanned = true
+		}
+
+		resultData.data = {
+			violation_type: err?.violation_type || null,
+			in_app_ban_appeal: err?.in_app_ban_appeal || null,
+			appeal_token: err?.appeal_token || null,
+			reason: reason || null,
+			retry_after: retryAfter ?? null,
+			wa_version: waVersion || null
+		}
+
+		return JSON.stringify(resultData, null, 2)
+	}
 
 	const updateDefaultDisappearingMode = async (duration: number) => {
 		await query({
