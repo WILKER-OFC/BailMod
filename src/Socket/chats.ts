@@ -256,22 +256,26 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			throw new Error('enter jid')
 		}
 
-		const resultData: {
-			isBanned: boolean
-			isNeedOfficialWa: boolean
-			number: string
-			data?: {
-				violation_type: string | null
-				in_app_ban_appeal: any
-				appeal_token: string | null
-				reason?: string | null
-				retry_after?: number | null
-				wa_version?: string | null
-			}
-		} = {
-			isBanned: false,
-			isNeedOfficialWa: false,
-			number: jid
+			const resultData: {
+				isBanned: boolean
+				isNeedOfficialWa: boolean
+				number: string
+				data?: {
+					violation_type?: string
+					in_app_ban_appeal?: any
+					appeal_token?: string
+					reason?: string
+					retry_after?: number
+					retry_after_human?: string
+					ban_until?: string
+					is_temporary?: boolean
+					is_permanent?: boolean
+					wa_version?: string
+				}
+			} = {
+				isBanned: false,
+				isNeedOfficialWa: false,
+				number: jid
 		}
 
 		let phoneNumber = jid
@@ -484,9 +488,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					? Number(err.retry_after)
 					: undefined
 
-		if (err?.custom_block_screen) {
-			resultData.isNeedOfficialWa = true
-		}
+		const violationType = err?.violation_type !== null && err?.violation_type !== undefined ? String(err.violation_type) : undefined
+		const appealToken = typeof err?.appeal_token === 'string' ? err.appeal_token : undefined
+		const inAppBanAppeal = err?.in_app_ban_appeal !== null && err?.in_app_ban_appeal !== undefined ? err.in_app_ban_appeal : undefined
 
 		const isTempBanLike =
 			reasonLc === 'temporarily_unavailable' ||
@@ -495,29 +499,53 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			reasonLc === 'too_many_requests' ||
 			reasonLc === 'too_many_attempts' ||
 			reasonLc === 'too_many_guesses' ||
-			reasonLc === 'rate_limit'
+			reasonLc === 'rate_limit' ||
+			reasonLc === 'no_routes'
 
-		if (
-			err?.appeal_token ||
-			reasonLc === 'blocked' ||
-			isTempBanLike ||
-			(reasonLc &&
-				(reasonLc.includes('ban') ||
-					reasonLc.includes('banned') ||
-					reasonLc.includes('block') ||
-					reasonLc.includes('support')))
-		) {
-			resultData.isBanned = true
+		const needsOfficialApp =
+			!!err?.custom_block_screen ||
+			reasonLc === 'no_routes' ||
+			(reasonLc ? reasonLc.includes('support') : false) ||
+			violationType === '14' // common for third-party client enforcement
+
+		if (needsOfficialApp) {
+			resultData.isNeedOfficialWa = true
 		}
 
-		resultData.data = {
-			violation_type: err?.violation_type || null,
-			in_app_ban_appeal: err?.in_app_ban_appeal || null,
-			appeal_token: err?.appeal_token || null,
-			reason: reason || null,
-			retry_after: retryAfter ?? null,
-			wa_version: waVersion || null
+		// Only set "banned" for strong signals. Temporary throttles/holds should not flip this.
+		const isBanned = !!appealToken || reasonLc === 'blocked' || violationType !== undefined
+		resultData.isBanned = isBanned
+
+		const isTemporary = retryAfter !== undefined || isTempBanLike
+		const isPermanent = isBanned && !isTemporary
+
+		const formatDurationSeconds = (seconds: number) => {
+			const sec = Math.max(0, Math.floor(seconds))
+			const days = Math.floor(sec / 86400)
+			const hours = Math.floor((sec % 86400) / 3600)
+			const mins = Math.floor((sec % 3600) / 60)
+			const parts: string[] = []
+			if (days) parts.push(`${days}d`)
+			if (hours) parts.push(`${hours}h`)
+			if (mins) parts.push(`${mins}m`)
+			if (!parts.length) parts.push(`${sec}s`)
+			return parts.join(' ')
 		}
+
+		const data: NonNullable<typeof resultData.data> = {}
+		if (violationType) data.violation_type = violationType
+		if (inAppBanAppeal !== undefined) data.in_app_ban_appeal = inAppBanAppeal
+		if (appealToken) data.appeal_token = appealToken
+		if (reason) data.reason = reason
+		if (retryAfter !== undefined) {
+			data.retry_after = retryAfter
+			data.retry_after_human = formatDurationSeconds(retryAfter)
+			data.ban_until = new Date(Date.now() + retryAfter * 1000).toISOString()
+		}
+		data.is_temporary = isTemporary
+		data.is_permanent = isPermanent
+		data.wa_version = waVersion
+		resultData.data = data
 
 		return JSON.stringify(resultData, null, 2)
 	}
