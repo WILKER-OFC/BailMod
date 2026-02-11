@@ -63,8 +63,8 @@ import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeSocket } from './socket.js'
 const MAX_SYNC_ATTEMPTS = 2
 
-const DEFAULT_MOBILE_WA_VERSION = '2.25.23.24'
-const MOBILE_WA_VERSION_CACHE_TTL_MS = 1000 * 60 * 60 * 12 // 12 hours
+const DEFAULT_MOBILE_WA_VERSION = '2.26.5.76'
+const MOBILE_WA_VERSION_CACHE_TTL_MS = 1000 * 60 * 60 * 12
 let cachedMobileWAVersion: { value: string; fetchedAtMs: number } | undefined
 
 type BanViolationInfo = {
@@ -76,7 +76,6 @@ type BanViolationInfo = {
 }
 
 const BAN_VIOLATION_INFO_BY_TYPE: Record<string, BanViolationInfo> = {
-	// Observed violation_type = 14.
 	'14': {
 		description: 'Severe policy violation.',
 		duration: 'Under review (6-24 hours)',
@@ -94,7 +93,6 @@ const normalizeMobileWAVersion = (version: string) => {
 
 const fetchLatestMobileWAVersionFromApple = async () => {
 	try {
-		// WhatsApp Messenger iOS app id
 		const resp = await fetch('https://itunes.apple.com/lookup?id=310633997&country=us', {
 			headers: {
 				'User-Agent': 'BailMod'
@@ -191,6 +189,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		config.placeholderResendCache = placeholderResendCache
 	}
 
+	const checkWhatsAppNeedOfficialCache = new NodeCache<boolean>({
+		stdTTL: 7 * 24 * 60 * 60,
+		useClones: false
+	})
+
 	/** helper function to fetch the given app state sync key */
 	const getAppStateSyncKey = async (keyId: string) => {
 		const { [keyId]: key } = await authState.keys.get('app-state-sync-key', [keyId])
@@ -278,11 +281,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const resultData: {
 			isBanned: boolean
 			isNeedOfficialWa: boolean
+			isPermanent: boolean
 			number: string
 			data?: {
-				isBanned: boolean
-				isPermanent: boolean
-				isNeedOfficialWa: boolean
 				violation_type?: string
 				violation_info?: Omit<BanViolationInfo, 'isPermanent'>
 				in_app_ban_appeal?: any
@@ -292,10 +293,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				retry_after_human?: string
 				ban_until?: string
 				wa_version?: string
+				raw?: any
+				raw_voice?: any
 			}
 		} = {
 			isBanned: false,
 			isNeedOfficialWa: false,
+			isPermanent: false,
 			number: jid
 		}
 
@@ -319,6 +323,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		} catch (_err) {
 			throw new Error('invalid jid/phone number')
 		}
+
+		const parsedE164 =
+			typeof (parsedNumber as any)?.number === 'string' && (parsedNumber as any).number
+				? (parsedNumber as any).number
+				: phoneNumber
+		resultData.number = parsedE164.replace(/[^\d]/g, '')
 
 		const countryCode = parsedNumber.countryCallingCode
 		const nationalNumber = parsedNumber.nationalNumber
@@ -449,7 +459,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return { mobileRegisterCode, waVersion }
 		}
 
-		const makeMobileParams = (): MobileRegisterParams => {
+		const makeMobileParams = (method: 'sms' | 'voice'): MobileRegisterParams => {
 			const identityKey = Curve.generateKeyPair()
 			const uuidHex = randomUUID().replace(/-/g, '')
 			const deviceId = Buffer.from(uuidHex, 'hex').toString('base64url')
@@ -467,13 +477,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				phoneNumberNationalNumber: nationalNumber,
 				phoneNumberMobileCountryCode: '510',
 				phoneNumberMobileNetworkCode: '10',
-				method: 'sms'
+				method
 			}
 		}
 
-		const attemptRegisterCode = (waVersion: string) => {
+		const attemptRegisterCode = (waVersion: string, method: 'sms' | 'voice') => {
 			const { mobileRegisterCode } = buildMobileRegisterCode(waVersion)
-			return mobileRegisterCode(makeMobileParams())
+			return mobileRegisterCode(makeMobileParams(method))
 		}
 
 		const formatDurationSeconds = (seconds: number) => {
@@ -489,88 +499,199 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return parts.join(' ')
 		}
 
-		let waVersion = await getMobileWAVersion()
-		let err: any
-
-		try {
-			await attemptRegisterCode(waVersion)
-			resultData.data = {
-				isBanned: false,
-				isPermanent: false,
-				isNeedOfficialWa: false,
-				wa_version: waVersion
+		const stripNullishDeep = (value: any): any => {
+			if (value === null || value === undefined) return undefined
+			if (Array.isArray(value)) {
+				const mapped = value.map(stripNullishDeep).filter(v => v !== undefined)
+				return mapped
 			}
-			return JSON.stringify(resultData, null, 2)
-		} catch (caught: any) {
-			err = caught
+			if (typeof value === 'object') {
+				const out: any = {}
+				for (const [k, v] of Object.entries(value)) {
+					const cleaned = stripNullishDeep(v)
+					if (cleaned !== undefined) out[k] = cleaned
+				}
+				return out
+			}
+			return value
 		}
 
-		const reason1 = typeof err?.reason === 'string' ? err.reason : undefined
-		if (reason1?.toLowerCase() === 'old_version') {
+		const cacheKey = resultData.number || parsedE164
+		const cachedNeedOfficial = checkWhatsAppNeedOfficialCache.get(cacheKey) === true
+
+		let waVersion = await getMobileWAVersion()
+		let smsResp: any
+		let smsErr: any
+		let voiceResp: any
+		let voiceErr: any
+
+		const runAttempt = async (method: 'sms' | 'voice') => {
+			try {
+				const resp = await attemptRegisterCode(waVersion, method)
+				return { ok: true as const, resp }
+			} catch (err: any) {
+				return { ok: false as const, err }
+			}
+		}
+
+		const sms1 = await runAttempt('sms')
+		if (sms1.ok) {
+			smsResp = sms1.resp
+		} else {
+			smsErr = sms1.err
+		}
+
+		const smsReason1 = typeof smsErr?.reason === 'string' ? smsErr.reason : undefined
+		if (!smsResp && smsReason1?.toLowerCase() === 'old_version') {
 			const refreshed = await getMobileWAVersion({ forceRefresh: true })
 			if (refreshed && refreshed !== waVersion) {
 				waVersion = refreshed
-				try {
-					await attemptRegisterCode(waVersion)
-					return JSON.stringify(resultData, null, 2)
-				} catch (caught: any) {
-					err = caught
+				const sms2 = await runAttempt('sms')
+				if (sms2.ok) {
+					smsResp = sms2.resp
+					smsErr = undefined
+				} else {
+					smsErr = sms2.err
 				}
 			}
 		}
 
-		const reason = typeof err?.reason === 'string' ? err.reason : undefined
-		const reasonLc = reason?.toLowerCase()
+		const smsReasonLc = typeof smsErr?.reason === 'string' ? smsErr.reason.toLowerCase() : undefined
+		const shouldTryVoice =
+			!smsResp &&
+			(smsReasonLc === 'too_recent' ||
+				smsReasonLc === 'temporarily_unavailable' ||
+				smsReasonLc === 'rate_limit' ||
+				smsReasonLc === 'too_many' ||
+				smsReasonLc === 'too_many_requests' ||
+				smsReasonLc === 'too_many_attempts' ||
+				smsReasonLc === 'too_many_guesses' ||
+				smsReasonLc === 'no_routes')
+
+		if (shouldTryVoice) {
+			const voice1 = await runAttempt('voice')
+			if (voice1.ok) {
+				voiceResp = voice1.resp
+			} else {
+				voiceErr = voice1.err
+			}
+		}
+
+		const smsReason = typeof smsErr?.reason === 'string' ? smsErr.reason : undefined
+		const smsReasonLc2 = smsReason?.toLowerCase()
+		const voiceReason = typeof voiceErr?.reason === 'string' ? voiceErr.reason : undefined
+		const voiceReasonLc = voiceReason?.toLowerCase()
+
+		const needsOfficialSignal =
+			!!smsErr?.custom_block_screen ||
+			!!voiceErr?.custom_block_screen ||
+			smsReasonLc2 === 'no_routes' ||
+			voiceReasonLc === 'no_routes' ||
+			(smsReasonLc2 ? smsReasonLc2.includes('support') : false) ||
+			(voiceReasonLc ? voiceReasonLc.includes('support') : false) ||
+			(smsReasonLc2 ? smsReasonLc2.includes('official') || smsReasonLc2.includes('unofficial') || smsReasonLc2.includes('mod') : false) ||
+			(voiceReasonLc ? voiceReasonLc.includes('official') || voiceReasonLc.includes('unofficial') || voiceReasonLc.includes('mod') : false)
+
+		if (needsOfficialSignal) {
+			checkWhatsAppNeedOfficialCache.set(cacheKey, true)
+		}
+
+		resultData.isNeedOfficialWa = cachedNeedOfficial || needsOfficialSignal
+
+		const hasAppealToken =
+			typeof smsErr?.appeal_token === 'string' ||
+			typeof voiceErr?.appeal_token === 'string'
+
+		const hasBanFields =
+			(smsErr?.violation_type !== null && smsErr?.violation_type !== undefined) ||
+			(voiceErr?.violation_type !== null && voiceErr?.violation_type !== undefined) ||
+			(smsErr?.in_app_ban_appeal !== null && smsErr?.in_app_ban_appeal !== undefined) ||
+			(voiceErr?.in_app_ban_appeal !== null && voiceErr?.in_app_ban_appeal !== undefined)
+
+		const looksLikeBanReason = (r?: string) => (r ? /(^|_)ban(ned)?($|_)/.test(r) : false)
+
+		const isBannedSignal =
+			smsReasonLc2 === 'blocked' ||
+			voiceReasonLc === 'blocked' ||
+			hasAppealToken ||
+			hasBanFields ||
+			looksLikeBanReason(smsReasonLc2) ||
+			looksLikeBanReason(voiceReasonLc)
+
+		resultData.isBanned = isBannedSignal
+
+		const scoreErr = (e: any) => {
+			if (!e) return -1
+			const r = typeof e.reason === 'string' ? e.reason.toLowerCase() : ''
+			let score = 0
+			if (r === 'blocked') score += 100
+			if (typeof e.appeal_token === 'string') score += 95
+			if (e.violation_type !== null && e.violation_type !== undefined) score += 90
+			if (e.in_app_ban_appeal !== null && e.in_app_ban_appeal !== undefined) score += 85
+			if (e.custom_block_screen) score += 70
+			if (r === 'no_routes') score += 65
+			if (r.includes('support')) score += 60
+			if (r.includes('official') || r.includes('unofficial') || r.includes('mod')) score += 55
+			if (typeof e.retry_after === 'number' || (typeof e.retry_after === 'string' && /^\d+$/.test(e.retry_after))) {
+				score += 30
+			}
+			if (typeof e.reason === 'string') score += 5
+			return score
+		}
+
+		const primaryErr = scoreErr(smsErr) >= scoreErr(voiceErr) ? smsErr : voiceErr
+		const secondaryErr = primaryErr === smsErr ? voiceErr : smsErr
+
+		const reason = typeof primaryErr?.reason === 'string' ? primaryErr.reason : undefined
 		const retryAfter =
-			typeof err?.retry_after === 'number'
-				? err.retry_after
-				: typeof err?.retry_after === 'string' && /^\d+$/.test(err.retry_after)
-					? Number(err.retry_after)
+			typeof primaryErr?.retry_after === 'number'
+				? primaryErr.retry_after
+				: typeof primaryErr?.retry_after === 'string' && /^\d+$/.test(primaryErr.retry_after)
+					? Number(primaryErr.retry_after)
 					: undefined
 
 		const violationType =
-			err?.violation_type !== null && err?.violation_type !== undefined ? String(err.violation_type) : undefined
-		const appealToken = typeof err?.appeal_token === 'string' ? err.appeal_token : undefined
+			primaryErr?.violation_type !== null && primaryErr?.violation_type !== undefined
+				? String(primaryErr.violation_type)
+				: secondaryErr?.violation_type !== null && secondaryErr?.violation_type !== undefined
+					? String(secondaryErr.violation_type)
+					: undefined
+
 		const inAppBanAppeal =
-			err?.in_app_ban_appeal !== null && err?.in_app_ban_appeal !== undefined ? err.in_app_ban_appeal : undefined
+			primaryErr?.in_app_ban_appeal !== null && primaryErr?.in_app_ban_appeal !== undefined
+				? primaryErr.in_app_ban_appeal
+				: secondaryErr?.in_app_ban_appeal !== null && secondaryErr?.in_app_ban_appeal !== undefined
+					? secondaryErr.in_app_ban_appeal
+					: undefined
 
-		const isTempBanLike =
-			reasonLc === 'temporarily_unavailable' ||
-			reasonLc === 'too_recent' ||
-			reasonLc === 'too_many' ||
-			reasonLc === 'too_many_requests' ||
-			reasonLc === 'too_many_attempts' ||
-			reasonLc === 'too_many_guesses' ||
-			reasonLc === 'rate_limit' ||
-			reasonLc === 'no_routes'
+		const appealToken =
+			typeof primaryErr?.appeal_token === 'string'
+				? primaryErr.appeal_token
+				: typeof secondaryErr?.appeal_token === 'string'
+					? secondaryErr.appeal_token
+					: undefined
 
-		const needsOfficialApp =
-			!!err?.custom_block_screen ||
-			reasonLc === 'no_routes' ||
-			(reasonLc ? reasonLc.includes('support') : false)
-
-		if (needsOfficialApp) {
-			resultData.isNeedOfficialWa = true
-		}
-
-		// Only set "banned" for strong signals.
-		const isBanned =
-			reasonLc === 'blocked' || !!appealToken || (reasonLc ? reasonLc.includes('ban') || reasonLc.includes('banned') : false)
-		resultData.isBanned = isBanned
+		const waVersionFromResponse =
+			typeof primaryErr?.wa_version === 'string'
+				? primaryErr.wa_version
+				: typeof secondaryErr?.wa_version === 'string'
+					? secondaryErr.wa_version
+					: undefined
 
 		const violationInfo = violationType ? BAN_VIOLATION_INFO_BY_TYPE[violationType] : undefined
-
-		const isTemporary = !isBanned && (retryAfter !== undefined || isTempBanLike)
 		const isPermanent =
-			isBanned &&
+			resultData.isBanned &&
 			retryAfter === undefined &&
 			(violationInfo?.isPermanent !== undefined ? violationInfo.isPermanent : true)
+		resultData.isPermanent = isPermanent
 
-		const data: NonNullable<typeof resultData.data> = {
-			isBanned,
-			isPermanent,
-			isNeedOfficialWa: resultData.isNeedOfficialWa,
-			wa_version: waVersion
+		const data: NonNullable<typeof resultData.data> = { wa_version: waVersionFromResponse || waVersion }
+
+		if (reason) data.reason = reason
+		if (retryAfter !== undefined) {
+			data.retry_after = retryAfter
+			data.retry_after_human = formatDurationSeconds(retryAfter)
+			data.ban_until = new Date(Date.now() + retryAfter * 1000).toISOString()
 		}
 
 		if (violationType) data.violation_type = violationType
@@ -580,12 +701,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 		if (inAppBanAppeal !== undefined) data.in_app_ban_appeal = inAppBanAppeal
 		if (appealToken) data.appeal_token = appealToken
-		if (reason) data.reason = reason
-		if (retryAfter !== undefined) {
-			data.retry_after = retryAfter
-			data.retry_after_human = formatDurationSeconds(retryAfter)
-			data.ban_until = new Date(Date.now() + retryAfter * 1000).toISOString()
-		}
+		if (smsErr || smsResp) data.raw = stripNullishDeep(smsErr || smsResp)
+		if (voiceErr || voiceResp) data.raw_voice = stripNullishDeep(voiceErr || voiceResp)
 
 		resultData.data = data
 
