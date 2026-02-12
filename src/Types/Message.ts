@@ -298,6 +298,18 @@ export type RequestPaymentInfo = {
 	contextInfo?: proto.IContextInfo
 }
 
+export type StickerPackInfo = {
+	name: string
+	publisher: string
+	description?: string
+	cover: WAMediaUpload
+	stickers: {
+		media: WAMediaUpload
+		emojis?: string[]
+		accessibilityLabel?: string
+	}[]
+}
+
 export type OrderInfo = {
 	id: number | string
 	thumbnail: string | Uint8Array
@@ -399,6 +411,9 @@ export type AnyRegularMessageContent = (
 		  }
 		| {
 				inviteAdmin: AdminInviteInfo
+		  }
+		| {
+				stickerPack: StickerPackInfo
 		  }
 		| {
 				product: WASendableProduct

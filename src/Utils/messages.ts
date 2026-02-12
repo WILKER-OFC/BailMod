@@ -45,6 +45,7 @@ import {
 	type MediaDownloadOptions
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
+import { prepareStickerPackMessage } from './stickerPack'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, any> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
@@ -892,6 +893,15 @@ export const generateWAMessageContent = async (
 				}
 				break
 		}
+	} else if (hasNonNullishProperty(message, 'stickerPack')) {
+		const stickerPackMessage = await prepareStickerPackMessage(message.stickerPack, {
+			upload: options.upload,
+			logger: options.logger,
+			options: options.options,
+			mediaUploadTimeoutMs: options.mediaUploadTimeoutMs
+		})
+
+		m.stickerPackMessage = stickerPackMessage
 	} else if (hasOptionalProperty(message, 'ptv') && message.ptv) {
 		const { videoMessage } = await prepareWAMessageMedia({ video: message.video }, options)
 		m.ptvMessage = videoMessage
